@@ -4,9 +4,6 @@ import datetime
 import os
 import sys
 import time
-
-# Add binance directory to path for import
-sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'binance'))
 from binance_fetcher import BinanceDataFetcher
 
 

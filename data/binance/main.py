@@ -3,7 +3,6 @@ import configparser
 import os
 import datetime
 import sys
-sys.path.append('binance')
 from binance_fetcher import BinanceDataFetcher
 
 def read_config(path='config.ini'):

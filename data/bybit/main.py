@@ -2,7 +2,6 @@ import configparser
 import os
 import datetime
 import sys
-sys.path.append('bybit')
 from bybit_fetcher import BybitDataFetcher
 
 def read_config(path='config.ini'):
