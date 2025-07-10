@@ -252,7 +252,7 @@ class BinanceDataFetcher:
             chunk_df[['Open', 'High', 'Low', 'Close']] = chunk_df[['Open', 'High', 'Low', 'Close']].astype(float)
             
             # Convert timestamp and rename columns to lowercase
-            chunk_df['datetime'] = pd.to_datetime(chunk_df['Open Time'], unit='ms')
+            chunk_df['datetime'] = pd.to_datetime(chunk_df['Open Time'], unit='ms', )
             chunk_df['open'] = chunk_df['Open']
             chunk_df['high'] = chunk_df['High']
             chunk_df['low'] = chunk_df['Low']
