@@ -19,16 +19,16 @@ class BinanceDataFetcher:
         self.timeout_limit = 9 * 60
         self.symbol = symbol.upper()
         self.timeframe = timeframe
-        self.db_filename = f"binance_{self.symbol.lower()}_{self.timeframe}.db"
+        self.db_filename = f"Data_DB.db"
         # Go two steps back from this file's directory
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         self.db_path = os.path.join(project_root, self.db_filename)
-        self.table_name = self.db_filename.replace('.db', '')
+        self.table_name = f"binance_{self.symbol.lower()}_{self.timeframe}"
         self._init_database()
 
     def _init_database(self):
         """
-        Initialize SQLite database with only 5 columns: datetime, open, high, low, close.
+        Initialize SQLite database with 6 columns: datetime, open, high, low, close, volume.
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -39,7 +39,8 @@ class BinanceDataFetcher:
                         open REAL NOT NULL,
                         high REAL NOT NULL,
                         low REAL NOT NULL,
-                        close REAL NOT NULL
+                        close REAL NOT NULL,
+                        volume REAL NOT NULL
                     )
                 ''')
                 cursor.execute(f'''CREATE INDEX IF NOT EXISTS idx_datetime ON {self.table_name}(datetime)''')
@@ -50,26 +51,117 @@ class BinanceDataFetcher:
 
     def _insert_data_to_db(self, df: pd.DataFrame):
         """
-        Insert DataFrame data into SQLite database.
+        Insert DataFrame data into SQLite database with proper duplicate handling and sorting.
         Args:
-            df: DataFrame with columns: datetime, open, high, low, close
+            df: DataFrame with columns: datetime, open, high, low, close, volume
         """
         if df.empty:
             return
+        
         df = df.copy()
+        
+        # Ensure datetime is properly formatted and sorted
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        df = df.sort_values('datetime')
         df['datetime'] = df['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Remove duplicates before insertion
+        df = df.drop_duplicates(subset=['datetime'])
+        
         try:
             with sqlite3.connect(self.db_path) as conn:
-                data_to_insert = [tuple(row) for row in df[['datetime', 'open', 'high', 'low', 'close']].values]
+                # First, check for existing data to avoid conflicts
                 cursor = conn.cursor()
+                
+                # Get existing datetime values for the data we're about to insert
+                datetime_values = df['datetime'].tolist()
+                placeholders = ','.join(['?' for _ in datetime_values])
+                
+                cursor.execute(f'''
+                    SELECT datetime FROM {self.table_name} 
+                    WHERE datetime IN ({placeholders})
+                ''', datetime_values)
+                
+                existing_datetimes = {row[0] for row in cursor.fetchall()}
+                
+                # Filter out data that already exists
+                new_data = df[~df['datetime'].isin(existing_datetimes)]
+                
+                if new_data.empty:
+                    print("All data already exists in database")
+                    return
+                
+                # Insert only new data
+                data_to_insert = [tuple(row) for row in new_data[['datetime', 'open', 'high', 'low', 'close', 'volume']].values]
+                
                 cursor.executemany(f'''
-                    INSERT OR IGNORE INTO {self.table_name} (datetime, open, high, low, close)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO {self.table_name} (datetime, open, high, low, close, volume)
+                    VALUES (?, ?, ?, ?, ?, ?)
                 ''', data_to_insert)
+                
                 conn.commit()
-                print(f"Inserted {len(data_to_insert)} records into {self.db_path} ({self.table_name})")
+                print(f"Inserted {len(data_to_insert)} new records into {self.db_path} ({self.table_name})")
+                
+                # Verify data integrity by checking for any remaining gaps
+                self._verify_data_integrity()
+                
         except Exception as e:
             print(f"Error inserting data to database: {e}")
+    
+    def _verify_data_integrity(self):
+        """
+        Verify that data in the database is properly sorted and has no duplicates.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Check for duplicates
+                cursor.execute(f'''
+                    SELECT datetime, COUNT(*) as count
+                    FROM {self.table_name}
+                    GROUP BY datetime
+                    HAVING COUNT(*) > 1
+                ''')
+                
+                duplicates = cursor.fetchall()
+                if duplicates:
+                    print(f"Warning: Found {len(duplicates)} duplicate datetime entries")
+                    
+                    # Remove duplicates keeping only the first occurrence
+                    for dup_datetime, count in duplicates:
+                        cursor.execute(f'''
+                            DELETE FROM {self.table_name}
+                            WHERE datetime = ? AND rowid NOT IN (
+                                SELECT MIN(rowid) FROM {self.table_name} WHERE datetime = ?
+                            )
+                        ''', (dup_datetime, dup_datetime))
+                    
+                    conn.commit()
+                    print(f"Removed {sum(count-1 for _, count in duplicates)} duplicate entries")
+                
+                # Verify sorting
+                cursor.execute(f'''
+                    SELECT datetime FROM {self.table_name} ORDER BY datetime ASC
+                ''')
+                
+                all_datetimes = [row[0] for row in cursor.fetchall()]
+                sorted_datetimes = sorted(all_datetimes)
+                
+                if all_datetimes != sorted_datetimes:
+                    print("Warning: Data is not properly sorted, fixing...")
+                    # Recreate table with proper sorting
+                    cursor.execute(f'''
+                        CREATE TABLE {self.table_name}_temp AS
+                        SELECT * FROM {self.table_name} ORDER BY datetime ASC
+                    ''')
+                    cursor.execute(f'DROP TABLE {self.table_name}')
+                    cursor.execute(f'ALTER TABLE {self.table_name}_temp RENAME TO {self.table_name}')
+                    conn.commit()
+                    print("Data reordered successfully")
+                
+        except Exception as e:
+            print(f"Error verifying data integrity: {e}")
 
     def _get_existing_data_range(self) -> tuple:
         """
@@ -93,34 +185,105 @@ class BinanceDataFetcher:
             print(f"Error getting existing data range: {e}")
             return (None, None)
 
+    def _get_existing_data_gaps(self, start_time: datetime.datetime, end_time: datetime.datetime) -> list:
+        """
+        Get gaps in existing data within the specified time range.
+        Returns:
+            List of tuples (gap_start, gap_end) representing missing data periods
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get all existing data points in the range, sorted by datetime
+                cursor.execute(f'''
+                    SELECT datetime 
+                    FROM {self.table_name} 
+                    WHERE datetime >= ? AND datetime <= ?
+                    ORDER BY datetime ASC
+                ''', (start_time.strftime('%Y-%m-%d %H:%M:%S'), 
+                      end_time.strftime('%Y-%m-%d %H:%M:%S')))
+                
+                existing_times = [pd.to_datetime(row[0]) for row in cursor.fetchall()]
+                
+                if not existing_times:
+                    # No data exists in range, return the entire range as a gap
+                    return [(start_time, end_time)]
+                
+                gaps = []
+                
+                # Check for gap before first existing data point
+                if existing_times[0] > start_time:
+                    gaps.append((start_time, existing_times[0]))
+                
+                # Check for gaps between existing data points
+                for i in range(len(existing_times) - 1):
+                    current_time = existing_times[i]
+                    next_time = existing_times[i + 1]
+                    
+                    # Calculate expected next time based on timeframe
+                    expected_next = self._get_next_datetime(current_time)
+                    
+                    # If there's a gap, add it to gaps list
+                    if next_time > expected_next:
+                        gaps.append((expected_next, next_time))
+                
+                # Check for gap after last existing data point
+                if existing_times[-1] < end_time:
+                    last_expected = self._get_next_datetime(existing_times[-1])
+                    if last_expected <= end_time:
+                        gaps.append((last_expected, end_time))
+                
+                return gaps
+                
+        except Exception as e:
+            print(f"Error getting existing data gaps: {e}")
+            return [(start_time, end_time)]
+    
+    def _get_next_datetime(self, current_time: datetime.datetime) -> datetime.datetime:
+        """
+        Get the next expected datetime based on the timeframe.
+        """
+        if 'm' in self.timeframe:
+            minutes = int(self.timeframe.replace('m', ''))
+        elif 'h' in self.timeframe:
+            minutes = int(self.timeframe.replace('h', '')) * 60
+        else:
+            minutes = 1
+        
+        return current_time + datetime.timedelta(minutes=minutes)
+
     def _fetch_missing_data(self, start_time: datetime.datetime, end_time: datetime.datetime) -> pd.DataFrame:
         """
-        Fetch only missing data from Binance API.
+        Fetch only missing data from Binance API by identifying gaps in existing data.
         Args:
             start_time: Start time for data fetching
             end_time: End time for data fetching
         Returns:
-            DataFrame with missing  data
+            DataFrame with missing data
         """
-        existing_min, existing_max = self._get_existing_data_range()
-        if existing_min is None or existing_max is None:
-            # No existing data, fetch all
-            return self._fetch_all_data(self.symbol, start_time, end_time, self.timeframe)
-        fetch_start = start_time
-        fetch_end = end_time
-        if existing_min > start_time:
-            fetch_start = start_time
-        else:
-            fetch_start = existing_max + datetime.timedelta(minutes=1)
-        if existing_max < end_time:
-            fetch_end = end_time
-        else:
-            fetch_end = existing_min - datetime.timedelta(minutes=1)
-        if fetch_start >= fetch_end:
+        gaps = self._get_existing_data_gaps(start_time, end_time)
+        
+        if not gaps:
             print("All requested data already exists in database")
             return pd.DataFrame()
-        print(f"Fetching missing data: {fetch_start} to {fetch_end}")
-        return self._fetch_all_data(self.symbol, fetch_start, fetch_end, self.timeframe)
+        
+        all_missing_data = []
+        
+        for gap_start, gap_end in gaps:
+            print(f"Fetching missing data: {gap_start} to {gap_end}")
+            gap_data = self._fetch_all_data(self.symbol, gap_start, gap_end, self.timeframe)
+            if not gap_data.empty:
+                all_missing_data.append(gap_data)
+        
+        if not all_missing_data:
+            return pd.DataFrame()
+        
+        # Combine all missing data
+        df = pd.concat(all_missing_data, ignore_index=True)
+        df = df.drop_duplicates(subset=['datetime']).sort_values('datetime')
+        
+        return df
     
     def _fetch_all_data(self, symbol: str, start_time: datetime.datetime, 
                         end_time: datetime.datetime, timeframe: str = '1m') -> pd.DataFrame:
@@ -193,9 +356,12 @@ class BinanceDataFetcher:
                 'open': 'first',
                 'high': 'max',
                 'low': 'min',
-                'close': 'last'
+                'close': 'last',
+                'volume': 'sum'
             }).dropna()
             
+            # Round volume to 2 decimal places after resampling
+            df['volume'] = df['volume'].round(2)
             df.reset_index(inplace=True)
         
         print(f"Total records fetched: {len(df)}")
@@ -249,7 +415,7 @@ class BinanceDataFetcher:
             ])
             
             # Convert numeric columns efficiently
-            chunk_df[['Open', 'High', 'Low', 'Close']] = chunk_df[['Open', 'High', 'Low', 'Close']].astype(float)
+            chunk_df[['Open', 'High', 'Low', 'Close', 'Volume']] = chunk_df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
             
             # Convert timestamp and rename columns to lowercase
             chunk_df['datetime'] = pd.to_datetime(chunk_df['Open Time'], unit='ms', )
@@ -257,10 +423,12 @@ class BinanceDataFetcher:
             chunk_df['high'] = chunk_df['High']
             chunk_df['low'] = chunk_df['Low']
             chunk_df['close'] = chunk_df['Close']
+            chunk_df['volume'] = chunk_df['Volume']
             
-            # Keep only OHLC columns with lowercase names
-            chunk_df = chunk_df[['datetime', 'open', 'high', 'low', 'close']]
-            
+            # Keep only OHLCV columns with lowercase names
+            chunk_df = chunk_df[['datetime', 'open', 'high', 'low', 'close', 'volume']]
+            # Round volume to 2 decimal places
+            chunk_df['volume'] = chunk_df['volume'].round(2)
             return chunk_df
             
         except Exception as e:
@@ -274,11 +442,11 @@ class BinanceDataFetcher:
             start_time: Start time for data retrieval
             end_time: End time for data retrieval
         Returns:
-            DataFrame with columns: datetime, open, high, low, close
+            DataFrame with columns: datetime, open, high, low, close, volume
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
-                query = f'SELECT datetime, open, high, low, close FROM {self.table_name}'
+                query = f'SELECT datetime, open, high, low, close, volume FROM {self.table_name}'
                 params = []
                 if start_time:
                     query += ' WHERE datetime >= ?'
@@ -293,6 +461,7 @@ class BinanceDataFetcher:
                 df = pd.read_sql_query(query, conn, params=params)
                 if not df.empty:
                     df['datetime'] = pd.to_datetime(df['datetime'])
+                    df['volume'] = df['volume'].round(2) # Round volume here as well
                 return df
         except Exception as e:
             print(f"Error retrieving data from database: {e}")
@@ -313,7 +482,7 @@ class BinanceDataFetcher:
             drop_last_candle: Whether to drop the last candle (incomplete)
             use_cache: Whether to use database cache
         Returns:
-            DataFrame with columns: datetime, open, high, low, close
+            DataFrame with columns: datetime, open, high, low, close, volume
         """
         # Set default times if not provided
         if end_time is None:
@@ -334,15 +503,39 @@ class BinanceDataFetcher:
             print(f"Dropped last candle (incomplete)")
         print(f"Total records returned: {len(df)}")
         return df
+    
+    def interpolate_missing(self, df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+        """
+        Fill missing datetime values using interpolation.
+        """
+        if df.empty:
+            return df
+        df.set_index('datetime', inplace=True)
+        # Convert timeframe to pandas frequency format
+        if timeframe == '1m':
+            freq = '1min'
+        elif timeframe == '5m':
+            freq = '5min'
+        elif timeframe == '15m':
+            freq = '15min'
+        elif timeframe == '1h':
+            freq = '1H'
+        else:
+            freq = '1min'  # default
+        df = df.asfreq(freq)
+        df.interpolate(method='linear', inplace=True)
+        df.reset_index(inplace=True)
+        return df
 
 if __name__ == "__main__":
     api_key = os.getenv('API_KEY')
     api_secret = os.getenv('API_SECRET')
     symbol = 'BTC'
-    timeframe = '5m'
+    timeframe = '1m'
     start = datetime.datetime(2025, 6, 1)
     fetcher = BinanceDataFetcher(api_key, api_secret, symbol, timeframe)
     fetcher.fetch_data(start_time=start, 
                        end_time=None, 
                        drop_last_candle=True, 
                        use_cache=True)
+
