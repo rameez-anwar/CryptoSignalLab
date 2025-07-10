@@ -2,6 +2,12 @@ import sqlite3
 import pandas as pd
 import datetime
 import os
+import sys
+import time
+
+# Add binance directory to path for import
+sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'binance'))
+from binance_fetcher import BinanceDataFetcher
 
 
 class DataDownloader:
@@ -25,6 +31,10 @@ class DataDownloader:
         
         # Parse time horizon to minutes
         self.time_horizon_minutes = self._parse_time_horizon(time_horizon)
+        
+        # Initialize API credentials (will be set when needed)
+        self.api_key = None
+        self.api_secret = None
         
         print(f"DataDownloader initialized:")
         print(f"  Exchange: {self.exchange}")
@@ -51,15 +61,120 @@ class DataDownloader:
             except ValueError:
                 return 1
     
-    def fetch_data(self, start_time=None, end_time=None, num_records=None):
+    def _check_data_availability(self):
+        """
+        Check if data exists in the database for the requested symbol
+        Returns:
+            bool: True if data exists, False otherwise
+        """
+        if not os.path.exists(self.db_path):
+            return False
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Check if table exists and has data
+            cursor.execute(f"""
+                SELECT COUNT(*) FROM sqlite_master 
+                WHERE type='table' AND name='{self.table_name}'
+            """)
+            
+            if cursor.fetchone()[0] == 0:
+                conn.close()
+                return False
+            
+            # Check if table has any data
+            cursor.execute(f"SELECT COUNT(*) FROM {self.table_name}")
+            count = cursor.fetchone()[0]
+            conn.close()
+            
+            return count > 0
+            
+        except Exception as e:
+            print(f"Error checking data availability: {e}")
+            return False
+    
+    def _download_missing_data(self, start_time=None, end_time=None):
+        """
+        Download missing data from the exchange API
+        """
+        print(f"⏳ Wait, fetching {self.symbol.upper()} data from {self.exchange.upper()}...")
+        
+        # Get API credentials from environment
+        self.api_key = os.getenv('API_KEY')
+        self.api_secret = os.getenv('API_SECRET')
+        
+        if not self.api_key or not self.api_secret:
+            print("ERROR: API_KEY and API_SECRET environment variables are required for downloading data")
+            return False
+        
+        try:
+            # Set default time range if not provided
+            if end_time is None:
+                end_time = datetime.datetime.now()
+            if start_time is None:
+                start_time = end_time - datetime.timedelta(days=30)  # Default to last 30 days
+            
+            print(f"Downloading data from {start_time} to {end_time}")
+            
+            # Create fetcher instance
+            fetcher = BinanceDataFetcher(
+                api_key=self.api_key,
+                api_secret=self.api_secret,
+                symbol=self.symbol.upper(),
+                timeframe='1m'  # Always download 1-minute data as base
+            )
+            
+            # Download data
+            df = fetcher.fetch_data(
+                start_time=start_time,
+                end_time=end_time,
+                drop_last_candle=True,
+                use_cache=True
+            )
+            
+            if df is not None and not df.empty:
+                print(f"Successfully downloaded {len(df)} records for {self.symbol.upper()}")
+                return True
+            else:
+                print(f"No data downloaded for {self.symbol.upper()}")
+                return False
+                
+        except Exception as e:
+            print(f"Error downloading data: {e}")
+            return False
+    
+    def fetch_data(self, start_time=None, end_time=None, num_records=None, auto_download=True):
         """
         Fetch data from database and return (1_minute_data, time_horizon_data)
+        If data is not available and auto_download is True, automatically download it
         
         Args:
             start_time: Start time for data fetching (optional)
             end_time: End time for data fetching (optional)
             num_records: Number of 1-minute records to fetch (optional)
+            auto_download: Whether to automatically download missing data (default: True)
         """
+        # Check if data is available
+        if not self._check_data_availability():
+            if auto_download:
+                print(f"Data for {self.symbol.upper()} not found in database")
+                print(f"Attempting to download data automatically...")
+                
+                # Download missing data
+                if self._download_missing_data(start_time, end_time):
+                    print(f"Data downloaded successfully! Now fetching from database...")
+                    # Small delay to ensure data is written to database
+                    time.sleep(1)
+                else:
+                    print(f" Failed to download data for {self.symbol.upper()}")
+                    return None, None
+            else:
+                print(f"No data found for {self.symbol.upper()} in database")
+                print(f"Use auto_download=True to automatically download missing data")
+                return None, None
+        
         if not os.path.exists(self.db_path):
             print(f"ERROR: Database not found: {self.db_path}")
             return None, None
@@ -184,7 +299,7 @@ class DataDownloader:
 
 if __name__ == "__main__":
     exchange = "binance"
-    symbol = "btc"
+    symbol = "xrp"
     time_horizon = "4m"
     
     downloader = DataDownloader(exchange, symbol, time_horizon)
@@ -192,8 +307,8 @@ if __name__ == "__main__":
     print(f"Fetching ALL records from database for {time_horizon}")
     print("=" * 60)
     
-    # Fetch all records from database
-    df_1min, df_horizon = downloader.fetch_data()
+    # Fetch all records from database (with auto-download enabled)
+    df_1min, df_horizon = downloader.fetch_data(auto_download=True)
     
     if df_1min is not None and df_horizon is not None:
         downloader.display_data(df_1min, df_horizon)

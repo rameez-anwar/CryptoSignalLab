@@ -34,7 +34,6 @@ def main():
                 start_time=cfg["start_date"],
                 end_time=cfg["end_date"],
                 drop_last_candle=True,
-                use_cache=True
             )
             if cfg["fill_missing_values"] == "interpolate":
                 df = fetcher.interpolate_missing(df, tf)
