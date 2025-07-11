@@ -68,45 +68,55 @@ class BinanceDataFetcher:
         # Remove duplicates before insertion
         df = df.drop_duplicates(subset=['datetime'])
         
+        # Process in batches to avoid "too many SQL variables" error
+        batch_size = 1000  # SQLite limit is 999, so we use 1000 to be safe
+        total_inserted = 0
+        
         try:
             with sqlite3.connect(self.db_path) as conn:
-                # First, check for existing data to avoid conflicts
                 cursor = conn.cursor()
                 
-                # Get existing datetime values for the data we're about to insert
-                datetime_values = df['datetime'].tolist()
-                placeholders = ','.join(['?' for _ in datetime_values])
-                
-                cursor.execute(f'''
-                    SELECT datetime FROM {self.table_name} 
-                    WHERE datetime IN ({placeholders})
-                ''', datetime_values)
-                
-                existing_datetimes = {row[0] for row in cursor.fetchall()}
-                
-                # Filter out data that already exists
-                new_data = df[~df['datetime'].isin(existing_datetimes)]
-                
-                if new_data.empty:
-                    print("All data already exists in database")
-                    return
-                
-                # Insert only new data
-                data_to_insert = [tuple(row) for row in new_data[['datetime', 'open', 'high', 'low', 'close', 'volume']].values]
-                
-                cursor.executemany(f'''
-                    INSERT INTO {self.table_name} (datetime, open, high, low, close, volume)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', data_to_insert)
+                # Process data in batches
+                for i in range(0, len(df), batch_size):
+                    batch_df = df.iloc[i:i + batch_size]
+                    
+                    # Get existing datetime values for this batch
+                    datetime_values = batch_df['datetime'].tolist()
+                    placeholders = ','.join(['?' for _ in datetime_values])
+                    
+                    cursor.execute(f'''
+                        SELECT datetime FROM {self.table_name} 
+                        WHERE datetime IN ({placeholders})
+                    ''', datetime_values)
+                    
+                    existing_datetimes = {row[0] for row in cursor.fetchall()}
+                    
+                    # Filter out data that already exists
+                    new_data = batch_df[~batch_df['datetime'].isin(existing_datetimes)]
+                    
+                    if not new_data.empty:
+                        # Insert only new data
+                        data_to_insert = [tuple(row) for row in new_data[['datetime', 'open', 'high', 'low', 'close', 'volume']].values]
+                        
+                        cursor.executemany(f'''
+                            INSERT INTO {self.table_name} (datetime, open, high, low, close, volume)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        ''', data_to_insert)
+                        
+                        total_inserted += len(data_to_insert)
+                        print(f"Inserted batch {i//batch_size + 1}: {len(data_to_insert)} records")
                 
                 conn.commit()
-                print(f"Inserted {len(data_to_insert)} new records into {self.db_path} ({self.table_name})")
+                print(f"Total inserted: {total_inserted} new records into {self.db_path} ({self.table_name})")
                 
                 # Verify data integrity by checking for any remaining gaps
-                self._verify_data_integrity()
+                if total_inserted > 0:
+                    self._verify_data_integrity()
                 
         except Exception as e:
             print(f"Error inserting data to database: {e}")
+            import traceback
+            traceback.print_exc()
     
     def _verify_data_integrity(self):
         """

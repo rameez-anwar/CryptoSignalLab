@@ -4,6 +4,7 @@ import datetime
 import os
 import sys
 import time
+
 from binance_fetcher import BinanceDataFetcher
 
 
@@ -96,7 +97,7 @@ class DataDownloader:
         """
         Download missing data from the exchange API
         """
-        print(f"⏳ Wait, fetching {self.symbol.upper()} data from {self.exchange.upper()}...")
+        print(f"Wait, fetching {self.symbol.upper()} data from {self.exchange.upper()}...")
         
         # Get API credentials from environment
         self.api_key = os.getenv('API_KEY')
@@ -296,7 +297,7 @@ class DataDownloader:
 
 if __name__ == "__main__":
     exchange = "binance"
-    symbol = "xrp"
+    symbol = "btc"
     time_horizon = "4m"
     
     downloader = DataDownloader(exchange, symbol, time_horizon)
