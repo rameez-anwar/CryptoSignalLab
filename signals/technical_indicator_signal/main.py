@@ -18,7 +18,9 @@ if __name__ == "__main__":
     signal_df = sg.generate_signals()
     # Add datetime and OHLCV columns for reference
     ohlcv_cols = ['datetime', 'open', 'high', 'low', 'close', 'volume']
-    output_df = pd.concat([df[ohlcv_cols], signal_df], axis=1)
+    # Remove OHLCV columns from signal_df before concatenation
+    signal_df_no_ohlcv = signal_df.drop(columns=ohlcv_cols)
+    output_df = pd.concat([df[ohlcv_cols], signal_df_no_ohlcv], axis=1)
     # Round volume to 2 decimal places
     output_df['volume'] = output_df['volume'].round(2)
     # Save only datetime, ohlcv, and signal columns
