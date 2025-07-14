@@ -298,7 +298,7 @@ class DataDownloader:
 if __name__ == "__main__":
     exchange = "binance"
     symbol = "btc"
-    time_horizon = "4m"
+    time_horizon = "1m"
     
     downloader = DataDownloader(exchange, symbol, time_horizon)
     

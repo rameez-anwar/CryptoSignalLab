@@ -471,7 +471,7 @@ class BinanceDataFetcher:
                 df = pd.read_sql_query(query, conn, params=params)
                 if not df.empty:
                     df['datetime'] = pd.to_datetime(df['datetime'])
-                    df['volume'] = df['volume'].round(2) # Round volume here as well
+                    df['volume'] = df['volume'].round(2)
                 return df
         except Exception as e:
             print(f"Error retrieving data from database: {e}")

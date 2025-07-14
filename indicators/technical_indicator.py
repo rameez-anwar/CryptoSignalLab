@@ -105,4 +105,11 @@ class IndicatorCalculator:
         self.add_ad()
         self.add_trix()
         self.add_wma()
-        return self.df 
+        return self.df
+
+    @staticmethod
+    def save_to_csv(df: pd.DataFrame, filename: str):
+        # Reset index to include datetime as a column and rename it to "datetime"
+        df_with_datetime = df.reset_index()
+        df_with_datetime = df_with_datetime.rename(columns={'index': 'datetime'})
+        df_with_datetime.to_csv(filename, index=False) 
