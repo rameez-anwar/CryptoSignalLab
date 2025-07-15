@@ -5,7 +5,8 @@ import os
 import sys
 import time
 
-from binance_fetcher import BinanceDataFetcher
+from data.binance.binance_fetcher import BinanceDataFetcher
+from data.bybit.bybit_fetcher import BybitDataFetcher
 
 
 class DataDownloader:
@@ -24,7 +25,7 @@ class DataDownloader:
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         self.db_path = os.path.join(project_root, self.db_filename)
         
-        # Table name
+        # Table name is always exchange_symbol_1m for DB
         self.table_name = f"{self.exchange}_{self.symbol}_1m"
         
         # Parse time horizon to minutes
@@ -39,8 +40,9 @@ class DataDownloader:
         print(f"  Symbol: {self.symbol}")
         print(f"  Time Horizon: {self.time_horizon} ({self.time_horizon_minutes} minutes)")
         print(f"  Database: {self.db_path}")
+        print(f"  Table: {self.table_name}")
         print()
-    
+
     def _parse_time_horizon(self, time_horizon):
         """Parse time horizon string to minutes"""
         time_horizon = time_horizon.lower()
@@ -58,133 +60,131 @@ class DataDownloader:
                 return int(time_horizon)
             except ValueError:
                 return 1
-    
+
     def _check_data_availability(self):
         """
-        Check if data exists in the database for the requested symbol
+        Check if 1m data exists in the database for the requested symbol
         Returns:
             bool: True if data exists, False otherwise
         """
         if not os.path.exists(self.db_path):
             return False
-        
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
-            # Check if table exists and has data
+            # Check if 1m table exists and has data
             cursor.execute(f"""
                 SELECT COUNT(*) FROM sqlite_master 
                 WHERE type='table' AND name='{self.table_name}'
             """)
-            
             if cursor.fetchone()[0] == 0:
                 conn.close()
                 return False
-            
-            # Check if table has any data
             cursor.execute(f"SELECT COUNT(*) FROM {self.table_name}")
             count = cursor.fetchone()[0]
             conn.close()
-            
             return count > 0
-            
         except Exception as e:
             print(f"Error checking data availability: {e}")
             return False
-    
+
     def _download_missing_data(self, start_time=None, end_time=None):
         """
-        Download missing data from the exchange API
+        Download missing 1m data from the exchange API
         """
         print(f"Wait, fetching {self.symbol.upper()} data from {self.exchange.upper()}...")
-        
-        # Get API credentials from environment
-        self.api_key = os.getenv('API_KEY')
-        self.api_secret = os.getenv('API_SECRET')
-        
-        if not self.api_key or not self.api_secret:
-            print("ERROR: API_KEY and API_SECRET environment variables are required for downloading data")
+        # Get API credentials from environment based on exchange
+        if self.exchange == "binance":
+            self.api_key = os.getenv('API_KEY')
+            self.api_secret = os.getenv('API_SECRET')
+        elif self.exchange == "bybit":
+            self.api_key = os.getenv('bybit_api')
+            self.api_secret = os.getenv('bybit_secret')
+        else:
+            print(f"ERROR: Unsupported exchange '{self.exchange}'. Supported exchanges: binance, bybit")
             return False
-        
+        if not self.api_key or not self.api_secret:
+            print(f"ERROR: API credentials are required for downloading data from {self.exchange}")
+            if self.exchange == "binance":
+                print("Set API_KEY and API_SECRET environment variables for Binance")
+            elif self.exchange == "bybit":
+                print("Set bybit_api and bybit_secret environment variables for Bybit")
+            return False
         try:
             # Set default time range if not provided
             if end_time is None:
                 end_time = datetime.datetime.now()
             if start_time is None:
                 start_time = end_time - datetime.timedelta(days=30)  # Default to last 30 days
-            
             print(f"Downloading data from {start_time} to {end_time}")
-            
-            # Create fetcher instance
-            fetcher = BinanceDataFetcher(
-                api_key=self.api_key,
-                api_secret=self.api_secret,
-                symbol=self.symbol.upper(),
-                timeframe='1m'  # Always download 1-minute data as base
-            )
-            
-            # Download data
+            # Always download 1m data as base
+            if self.exchange == "binance":
+                fetcher = BinanceDataFetcher(
+                    api_key=self.api_key,
+                    api_secret=self.api_secret,
+                    symbol=self.symbol.upper(),
+                    timeframe='1m'
+                )
+            elif self.exchange == "bybit":
+                fetcher = BybitDataFetcher(
+                    api_key=self.api_key,
+                    api_secret=self.api_secret,
+                    symbol=self.symbol.upper(),
+                    timeframe='1m'
+                )
+            else:
+                print(f"ERROR: Unsupported exchange '{self.exchange}'")
+                return False
             df = fetcher.fetch_data(
                 start_time=start_time,
                 end_time=end_time,
                 drop_last_candle=True,
                 use_cache=True
             )
-            
             if df is not None and not df.empty:
                 print(f"Successfully downloaded {len(df)} records for {self.symbol.upper()}")
                 return True
             else:
                 print(f"No data downloaded for {self.symbol.upper()}")
                 return False
-                
         except Exception as e:
             print(f"Error downloading data: {e}")
             return False
-    
+
     def fetch_data(self, start_time=None, end_time=None, num_records=None, auto_download=True):
         """
         Fetch data from database and return (1_minute_data, time_horizon_data)
         If data is not available and auto_download is True, automatically download it
-        
         Args:
             start_time: Start time for data fetching (optional)
             end_time: End time for data fetching (optional)
             num_records: Number of 1-minute records to fetch (optional)
             auto_download: Whether to automatically download missing data (default: True)
         """
-        # Check if data is available
+        # Check if 1m data is available
         if not self._check_data_availability():
             if auto_download:
-                print(f"Data for {self.symbol.upper()} not found in database")
-                print(f"Attempting to download data automatically...")
-                
-                # Download missing data
+                print(f"1m data for {self.symbol.upper()} not found in database")
+                print(f"Attempting to download 1m data automatically...")
                 if self._download_missing_data(start_time, end_time):
-                    print(f"Data downloaded successfully! Now fetching from database...")
-                    # Small delay to ensure data is written to database
+                    print(f"1m data downloaded successfully! Now fetching from database...")
                     time.sleep(1)
                 else:
-                    print(f" Failed to download data for {self.symbol.upper()}")
+                    print(f"Failed to download 1m data for {self.symbol.upper()}")
                     return None, None
             else:
-                print(f"No data found for {self.symbol.upper()} in database")
+                print(f"No 1m data found for {self.symbol.upper()} in database")
                 print(f"Use auto_download=True to automatically download missing data")
                 return None, None
-        
         if not os.path.exists(self.db_path):
             print(f"ERROR: Database not found: {self.db_path}")
             return None, None
-        
         try:
             # Connect to database
             conn = sqlite3.connect(self.db_path)
-            
-            # Build query
+            # Always query the 1m table
             query = f"SELECT datetime, open, high, low, close, volume FROM {self.table_name}"
             params = []
-            
             if start_time or end_time:
                 conditions = []
                 if start_time:
@@ -193,52 +193,39 @@ class DataDownloader:
                 if end_time:
                     conditions.append("datetime <= ?")
                     params.append(end_time.strftime('%Y-%m-%d %H:%M:%S'))
-                
                 if conditions:
                     query += " WHERE " + " AND ".join(conditions)
-            
             query += " ORDER BY datetime DESC"  # Get latest records first
-            
             # Fetch 1-minute data
             df_1min = pd.read_sql_query(query, conn, params=params)
             conn.close()
-            
             if df_1min.empty:
-                print("No data found in database")
+                print("No 1m data found in database")
                 return None, None
-            
             # Convert datetime
             df_1min['datetime'] = pd.to_datetime(df_1min['datetime'])
             df_1min.set_index('datetime', inplace=True)
-            
             # Sort by datetime (ascending)
             df_1min = df_1min.sort_index()
-            
             # If num_records specified, take the latest records
             if num_records is not None:
                 df_1min = df_1min.tail(num_records)
                 print(f"Fetched {len(df_1min)} 1-minute records (latest {num_records})")
             else:
                 print(f"Fetched {len(df_1min)} 1-minute records")
-            
             print(f"Date range: {df_1min.index.min()} to {df_1min.index.max()}")
-            
             # Aggregate to time horizon if needed
             if self.time_horizon_minutes == 1:
                 df_horizon = df_1min.copy()
             else:
-                # Use precise aggregation
                 df_horizon = self._aggregate_data_precise(df_1min, self.time_horizon_minutes)
-            
             print(f"Created {len(df_horizon)} {self.time_horizon} records")
             print()
-            
             return df_1min, df_horizon
-            
         except Exception as e:
             print(f"ERROR: {e}")
             return None, None
-    
+
     def _aggregate_data_precise(self, df, minutes):
         """
         Aggregate data precisely to get exact number of records
@@ -296,9 +283,10 @@ class DataDownloader:
             
 
 if __name__ == "__main__":
-    exchange = "binance"
-    symbol = "btc"
-    time_horizon = "1m"
+    # Set your parameters here
+    exchange = "binance"  # or "bybit"
+    symbol = "sol"
+    time_horizon = "1h"
     
     downloader = DataDownloader(exchange, symbol, time_horizon)
     

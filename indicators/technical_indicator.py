@@ -1,6 +1,5 @@
 import pandas as pd
 import talib
-import numpy as np
 
 class IndicatorCalculator:
     def __init__(self, df: pd.DataFrame):
