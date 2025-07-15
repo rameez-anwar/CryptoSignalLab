@@ -1,5 +1,24 @@
 import pandas as pd
-from signal_rules import get_signal_rules
+from signals.technical_indicator_signal.signal_rules import get_signal_rules
+
+# Generic rules for indicators without custom logic
+
+def generic_row_rule_factory(indicator):
+    def rule(row):
+        if row['close'] > row[indicator]:
+            return 1
+        elif row['close'] < row[indicator]:
+            return -1
+        return 0
+    rule.requires_row = True
+    return rule
+
+def pattern_rule(val):
+    if val == 100:
+        return 1
+    elif val == -100:
+        return -1
+    return 0
 
 class SignalGenerator:
     def __init__(self, df, indicator_names=None):
@@ -8,32 +27,26 @@ class SignalGenerator:
 
     def generate_signals(self):
         df = self.df
-
-        # Create shifted columns needed by some rules
-        df['atr_prev'] = df['atr'].shift(1)
-        df['obv_prev'] = df['obv'].shift(1)
-        df['ad_prev'] = df['ad'].shift(1)
-        df['trix_prev'] = df['trix'].shift(1)
-
         signal_rules = get_signal_rules()
         signal_columns = []
 
-        for indicator, rule_func in signal_rules.items():
-            # Skip indicators not in selected list (if filter is set)
-            if self.indicator_names and indicator not in self.indicator_names:
-                continue
-
+        for indicator in self.indicator_names:
+            rule_func = signal_rules.get(indicator)
             signal_col = f"signal_{indicator}"
-
             try:
-                if getattr(rule_func, "requires_row", False):
-                    df[signal_col] = df.apply(rule_func, axis=1)
+                if rule_func is not None:
+                    if getattr(rule_func, "requires_row", False):
+                        df[signal_col] = df.apply(rule_func, axis=1)
+                    else:
+                        df[signal_col] = df[indicator].apply(rule_func)
+                elif indicator.startswith('CDL'):
+                    df[signal_col] = df[indicator].apply(pattern_rule)
                 else:
-                    df[signal_col] = df[indicator].apply(rule_func)
+                    # Use generic rule for overlap/price transform
+                    df[signal_col] = df.apply(generic_row_rule_factory(indicator), axis=1)
             except Exception as e:
                 print(f"[Warning] Error applying rule for '{indicator}': {e}")
                 df[signal_col] = 0
-
             signal_columns.append(signal_col)
 
         base_columns = ['datetime', 'open', 'high', 'low', 'close', 'volume']
