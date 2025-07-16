@@ -3,7 +3,7 @@ import configparser
 import os
 import datetime
 import sys
-from binance_fetcher import BinanceDataFetcher
+from data.binance.binance_fetcher import BinanceDataFetcher
 
 def read_config(path='config.ini'):
     config = configparser.ConfigParser()
