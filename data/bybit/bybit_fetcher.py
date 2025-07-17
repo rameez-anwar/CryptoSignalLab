@@ -3,7 +3,9 @@ import pandas as pd
 import datetime
 import time
 import os
-import sqlite3
+from data.utils.db_utils import get_pg_engine
+from data.utils.data_inserter_utils import DataInserter
+from sqlalchemy import text
 
 class BybitDataFetcher:
     def __init__(self, api_key: str, api_secret: str, symbol: str, timeframe: str):
@@ -21,41 +23,29 @@ class BybitDataFetcher:
             api_secret=api_secret
         )
         self.timeout_limit = 9 * 60
-        self.symbol = symbol.upper()
-        self.timeframe = timeframe
-        self.db_filename = f"Data_DB.db"
-        # Go two steps back from this file's directory
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        self.db_path = os.path.join(project_root, self.db_filename)
-        self.table_name = f"bybit_{self.symbol.lower()}_{self.timeframe}"
-        self._init_database()
+        self.symbol = symbol.lower()
+        self.timeframe = timeframe.lower()
+        self.engine = get_pg_engine()
+        self.data_inserter = DataInserter(self.engine)
+        self.schema = 'bybit_data'
+        self.table_name = f"{self.symbol}_{self.timeframe}"
+        self._init_table()
 
-    def _init_database(self):
+    def _init_table(self):
         """
-        Initialize SQLite database with 6 columns: datetime, open, high, low, close, volume.
+        Initialize PostgreSQL table with 6 columns: datetime, open, high, low, close, volume.
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(f'''
-                    CREATE TABLE IF NOT EXISTS {self.table_name} (
-                        datetime DATETIME PRIMARY KEY,
-                        open REAL NOT NULL,
-                        high REAL NOT NULL,
-                        low REAL NOT NULL,
-                        close REAL NOT NULL,
-                        volume REAL NOT NULL
-                    )
-                ''')
-                cursor.execute(f'''CREATE INDEX IF NOT EXISTS idx_datetime ON {self.table_name}(datetime)''')
-                conn.commit()
-                print(f"Database initialized: {self.db_path}, table: {self.table_name}")
+            # Ensure schema and table exist
+            self.data_inserter._schema_exists(self.schema)
+            self.data_inserter._create_table(self.table_name, self.schema)
+            print(f"Database initialized: PostgreSQL, schema: {self.schema}, table: {self.table_name}")
         except Exception as e:
             print(f"Error initializing database: {e}")
 
     def _insert_data_to_db(self, df: pd.DataFrame):
         """
-        Insert DataFrame data into SQLite database with proper duplicate handling and sorting.
+        Insert DataFrame data into PostgreSQL database with proper duplicate handling and sorting.
         Args:
             df: DataFrame with columns: datetime, open, high, low, close, volume
         """
@@ -63,122 +53,16 @@ class BybitDataFetcher:
             print("No data to insert (empty DataFrame)")
             return
         
-        print(f"Attempting to insert {len(df)} records to database table: {self.table_name}")
-        df = df.copy()
-        
-        # Ensure datetime is properly formatted and sorted
-        df['datetime'] = pd.to_datetime(df['datetime'])
-        df = df.sort_values('datetime')
-        df['datetime'] = df['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
-        
-        # Remove duplicates before insertion
-        df = df.drop_duplicates(subset=['datetime'])
-        print(f"After removing duplicates: {len(df)} records to insert")
-        
-        # Process in batches to avoid "too many SQL variables" error
-        batch_size = 1000  # SQLite limit is 999, so we use 1000 to be safe
-        total_inserted = 0
+        print(f"Attempting to insert {len(df)} records to database table: {self.schema}.{self.table_name}")
         
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
-                # Process data in batches
-                for i in range(0, len(df), batch_size):
-                    batch_df = df.iloc[i:i + batch_size]
-                    
-                    # Get existing datetime values for this batch
-                    datetime_values = batch_df['datetime'].tolist()
-                    placeholders = ','.join(['?' for _ in datetime_values])
-                    
-                    cursor.execute(f'''
-                        SELECT datetime FROM {self.table_name} 
-                        WHERE datetime IN ({placeholders})
-                    ''', datetime_values)
-                    
-                    existing_datetimes = {row[0] for row in cursor.fetchall()}
-                    
-                    # Filter out data that already exists
-                    new_data = batch_df[~batch_df['datetime'].isin(existing_datetimes)]
-                    
-                    if not new_data.empty:
-                        # Insert only new data
-                        data_to_insert = [tuple(row) for row in new_data[['datetime', 'open', 'high', 'low', 'close', 'volume']].values]
-                        
-                        cursor.executemany(f'''
-                            INSERT INTO {self.table_name} (datetime, open, high, low, close, volume)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        ''', data_to_insert)
-                        
-                        total_inserted += len(data_to_insert)
-                        print(f"Inserted batch {i//batch_size + 1}: {len(data_to_insert)} records")
-                
-                conn.commit()
-                print(f"Successfully inserted {total_inserted} new records into {self.db_path} ({self.table_name})")
-                
-                # Verify data integrity by checking for any remaining gaps
-                if total_inserted > 0:
-                    self._verify_data_integrity()
-                
+            # Use the DataInserter utility for PostgreSQL
+            self.data_inserter.save_dataframe(df, 'bybit', self.symbol, self.timeframe)
+            print(f"Successfully inserted {len(df)} records into PostgreSQL ({self.schema}.{self.table_name})")
         except Exception as e:
             print(f"Error inserting data to database: {e}")
             import traceback
             traceback.print_exc()
-    
-    def _verify_data_integrity(self):
-        """
-        Verify that data in the database is properly sorted and has no duplicates.
-        """
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
-                # Check for duplicates
-                cursor.execute(f'''
-                    SELECT datetime, COUNT(*) as count
-                    FROM {self.table_name}
-                    GROUP BY datetime
-                    HAVING COUNT(*) > 1
-                ''')
-                
-                duplicates = cursor.fetchall()
-                if duplicates:
-                    print(f"Warning: Found {len(duplicates)} duplicate datetime entries")
-                    
-                    # Remove duplicates keeping only the first occurrence
-                    for dup_datetime, count in duplicates:
-                        cursor.execute(f'''
-                            DELETE FROM {self.table_name}
-                            WHERE datetime = ? AND rowid NOT IN (
-                                SELECT MIN(rowid) FROM {self.table_name} WHERE datetime = ?
-                            )
-                        ''', (dup_datetime, dup_datetime))
-                    
-                    conn.commit()
-                    print(f"Removed {sum(count-1 for _, count in duplicates)} duplicate entries")
-                
-                # Verify sorting
-                cursor.execute(f'''
-                    SELECT datetime FROM {self.table_name} ORDER BY datetime ASC
-                ''')
-                
-                all_datetimes = [row[0] for row in cursor.fetchall()]
-                sorted_datetimes = sorted(all_datetimes)
-                
-                if all_datetimes != sorted_datetimes:
-                    print("Warning: Data is not properly sorted, fixing...")
-                    # Recreate table with proper sorting
-                    cursor.execute(f'''
-                        CREATE TABLE {self.table_name}_temp AS
-                        SELECT * FROM {self.table_name} ORDER BY datetime ASC
-                    ''')
-                    cursor.execute(f'DROP TABLE {self.table_name}')
-                    cursor.execute(f'ALTER TABLE {self.table_name}_temp RENAME TO {self.table_name}')
-                    conn.commit()
-                    print("Data reordered successfully")
-                
-        except Exception as e:
-            print(f"Error verifying data integrity: {e}")
 
     def _get_existing_data_range(self) -> tuple:
         """
@@ -187,13 +71,9 @@ class BybitDataFetcher:
             Tuple of (min_date, max_date) or (None, None) if no data exists
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(f'''
-                    SELECT MIN(datetime), MAX(datetime)
-                    FROM {self.table_name}
-                ''')
-                result = cursor.fetchone()
+            with self.engine.connect() as conn:
+                query = text(f"SELECT MIN(datetime), MAX(datetime) FROM {self.schema}.{self.table_name}")
+                result = conn.execute(query).fetchone()
                 if result and result[0] and result[1]:
                     return (pd.to_datetime(result[0]), pd.to_datetime(result[1]))
                 else:
@@ -209,19 +89,16 @@ class BybitDataFetcher:
             List of tuples (gap_start, gap_end) representing missing data periods
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                
+            with self.engine.connect() as conn:
                 # Get all existing data points in the range, sorted by datetime
-                cursor.execute(f'''
+                query = text(f"""
                     SELECT datetime 
-                    FROM {self.table_name}
-                    WHERE datetime >= ? AND datetime <= ?
+                    FROM {self.schema}.{self.table_name}
+                    WHERE datetime >= :start AND datetime <= :end
                     ORDER BY datetime ASC
-                ''', (start_time.strftime('%Y-%m-%d %H:%M:%S'), 
-                      end_time.strftime('%Y-%m-%d %H:%M:%S')))
-                
-                existing_datetimes = [pd.to_datetime(row[0]) for row in cursor.fetchall()]
+                """)
+                result = conn.execute(query, {'start': start_time, 'end': end_time})
+                existing_datetimes = [pd.to_datetime(row[0]) for row in result.fetchall()]
                 
                 if not existing_datetimes:
                     return [(start_time, end_time)]
@@ -249,14 +126,12 @@ class BybitDataFetcher:
         """
         Get the next datetime based on the timeframe.
         """
-        if self.timeframe == '1m':
-            return current_time + datetime.timedelta(minutes=1)
-        elif self.timeframe == '5m':
-            return current_time + datetime.timedelta(minutes=5)
-        elif self.timeframe == '15m':
-            return current_time + datetime.timedelta(minutes=15)
-        elif self.timeframe == '1h':
-            return current_time + datetime.timedelta(hours=1)
+        if 'm' in self.timeframe:
+            minutes = int(self.timeframe.replace('m', ''))
+            return current_time + datetime.timedelta(minutes=minutes)
+        elif 'h' in self.timeframe:
+            hours = int(self.timeframe.replace('h', ''))
+            return current_time + datetime.timedelta(hours=hours)
         else:
             return current_time + datetime.timedelta(minutes=1)
 
@@ -281,26 +156,34 @@ class BybitDataFetcher:
     def _fetch_all_data(self, symbol: str, start_time: datetime.datetime, 
                         end_time: datetime.datetime, timeframe: str = '1m') -> pd.DataFrame:
         """
-        Fetch all data for the given symbol and time range using batching.
+        Fetch all data from Bybit API with smart batching to avoid timeouts.
+        Args:
+            symbol: Trading symbol
+            start_time: Start time for data fetching
+            end_time: End time for data fetching
+            timeframe: Timeframe for data
+        Returns:
+            DataFrame with OHLC data
         """
-        print(f"Fetching {symbol} data from {start_time} to {end_time}")
+        print(f"Fetching all data from {start_time} to {end_time}")
         
         all_data = []
         current_start = start_time
         
         while current_start < end_time:
-            batch_size = self._calculate_batch_size(current_start, end_time)
-            current_end = min(current_start + datetime.timedelta(minutes=batch_size), end_time)
+            # Calculate batch size to avoid timeout
+            batch_size_minutes = self._calculate_batch_size(current_start, end_time)
+            current_end = min(current_start + datetime.timedelta(minutes=batch_size_minutes), end_time)
             
             print(f"  Fetching batch: {current_start} to {current_end}")
-            batch_data = self._fetch_batch(symbol, current_start, current_end)
             
+            batch_data = self._fetch_batch(symbol, current_start, current_end)
             if not batch_data.empty:
                 all_data.append(batch_data)
             
             current_start = current_end
             
-            # Rate limiting
+            # Small delay to avoid rate limiting
             time.sleep(0.1)
         
         if all_data:
@@ -436,7 +319,7 @@ class BybitDataFetcher:
     
     def get_data_from_db(self, start_time: datetime.datetime = None, end_time: datetime.datetime = None) -> pd.DataFrame:
         """
-        Retrieve data from SQLite database with proper datetime sorting.
+        Retrieve data from PostgreSQL database with proper datetime sorting.
         Args:
             start_time: Start time for data retrieval
             end_time: End time for data retrieval
@@ -444,20 +327,20 @@ class BybitDataFetcher:
             DataFrame with columns: datetime, open, high, low, close, volume
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                query = f'SELECT datetime, open, high, low, close, volume FROM {self.table_name}'
-                params = []
+            with self.engine.connect() as conn:
+                query = f'SELECT datetime, open, high, low, close, volume FROM {self.schema}.{self.table_name}'
+                params = {}
                 if start_time:
-                    query += ' WHERE datetime >= ?'
-                    params.append(start_time.strftime('%Y-%m-%d %H:%M:%S'))
+                    query += ' WHERE datetime >= :start'
+                    params['start'] = start_time
                 if end_time:
                     if params:
-                        query += ' AND datetime <= ?'
+                        query += ' AND datetime <= :end'
                     else:
-                        query += ' WHERE datetime <= ?'
-                    params.append(end_time.strftime('%Y-%m-%d %H:%M:%S'))
+                        query += ' WHERE datetime <= :end'
+                    params['end'] = end_time
                 query += ' ORDER BY datetime ASC'
-                df = pd.read_sql_query(query, conn, params=params)
+                df = pd.read_sql_query(text(query), conn, params=params)
                 if not df.empty:
                     df['datetime'] = pd.to_datetime(df['datetime'])
                     df['volume'] = df['volume'].round(2) # Round volume here as well
@@ -511,29 +394,52 @@ class BybitDataFetcher:
             print(f"Dropped last candle (incomplete)")
         print(f"Total records returned: {len(df)}")
         return df
-    
+
     def interpolate_missing(self, df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
         """
-        Fill missing datetime values using interpolation.
+        Interpolate missing values in the DataFrame.
+        Args:
+            df: DataFrame with OHLC data
+            timeframe: Timeframe string (e.g., '1m', '5m')
+        Returns:
+            DataFrame with interpolated missing values
         """
         if df.empty:
             return df
-        df.set_index('datetime', inplace=True)
-        # Convert timeframe to pandas frequency format
-        if timeframe == '1m':
-            freq = '1min'
-        elif timeframe == '5m':
-            freq = '5min'
-        elif timeframe == '15m':
-            freq = '15min'
-        elif timeframe == '1h':
-            freq = '1H'
+        
+        # Set datetime as index for resampling
+        df_copy = df.copy()
+        df_copy['datetime'] = pd.to_datetime(df_copy['datetime'])
+        df_copy.set_index('datetime', inplace=True)
+        
+        # Parse timeframe to get frequency
+        if 'm' in timeframe:
+            minutes = int(timeframe.replace('m', ''))
+            freq = f'{minutes}min'
+        elif 'h' in timeframe:
+            hours = int(timeframe.replace('h', ''))
+            freq = f'{hours}H'
         else:
             freq = '1min'  # default
-        df = df.asfreq(freq)
-        df.interpolate(method='linear', inplace=True)
-        df.reset_index(inplace=True)
-        return df
+        
+        # Resample to create regular intervals and interpolate
+        df_resampled = df_copy.resample(freq).agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum'
+        })
+        
+        # Forward fill missing values
+        df_filled = df_resampled.fillna(method='ffill')
+        
+        # Reset index to get datetime as column
+        df_filled.reset_index(inplace=True)
+        
+        print(f"Interpolated missing values: {len(df)} -> {len(df_filled)} records")
+        return df_filled
+
 
 if __name__ == "__main__":
     api_key = os.getenv('bybit_api')

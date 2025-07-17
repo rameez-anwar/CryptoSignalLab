@@ -3,16 +3,6 @@ import logging
 from sqlalchemy import create_engine, Column, Float, DateTime, MetaData, Table, inspect
 from sqlalchemy.exc import ProgrammingError, OperationalError
 import time
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('data_inserter.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
 
 class DataInserter:
     """
@@ -26,7 +16,6 @@ class DataInserter:
         """
         self.engine = engine
         self.max_retries = 3
-        logger.info("Initialized DataInserter with PostgreSQL engine")
 
     def _schema_exists(self, schema_name: str):
         """
@@ -40,11 +29,9 @@ class DataInserter:
                 with self.engine.connect() as conn:
                     conn.execute(f"CREATE SCHEMA {schema_name}")
                     conn.commit()
-                logger.info(f"Created schema: {schema_name}")
             else:
-                logger.debug(f"Schema {schema_name} already exists")
+                pass # No logging here
         except Exception as e:
-            logger.error(f"Error checking/creating schema {schema_name}: {str(e)}")
             raise
 
     def _create_table(self, table_name: str, schema: str) -> Table:
@@ -69,10 +56,8 @@ class DataInserter:
                 schema=schema
             )
             metadata.create_all(self.engine, checkfirst=True)
-            logger.info(f"Table {schema}.{table_name} initialized")
             return table
         except Exception as e:
-            logger.error(f"Error creating table {schema}.{table_name}: {str(e)}")
             raise
 
     def save_dataframe(self, df: pd.DataFrame, exchange: str, symbol: str, interval: str):
@@ -85,7 +70,6 @@ class DataInserter:
             interval: Timeframe (e.g., '1m')
         """
         if df.empty:
-            logger.warning("Empty DataFrame, skipping insert")
             return
 
         table_name = f"{symbol.lower()}_{interval}"
@@ -110,13 +94,10 @@ class DataInserter:
                         method='multi',
                         chunksize=1000
                     )
-                    logger.info(f"Inserted {len(df_to_save)} records into {schema}.{table_name} in {time.time() - start_time:.2f} seconds")
                     return
                 except OperationalError as e:
-                    logger.error(f"Attempt {attempt + 1}/{self.max_retries} failed: {str(e)}")
                     if attempt == self.max_retries - 1:
                         raise
                     time.sleep(1)
         except Exception as e:
-            logger.error(f"Error inserting data to {schema}.{table_name}: {str(e)}")
             raise

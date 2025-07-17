@@ -1,12 +1,14 @@
-import sqlite3
 import pandas as pd
 import datetime
 import os
 import sys
 import time
+from sqlalchemy import text
 
 from data.binance.binance_fetcher import BinanceDataFetcher
 from data.bybit.bybit_fetcher import BybitDataFetcher
+from data.utils.db_utils import get_pg_engine
+from data.utils.data_inserter_utils import DataInserter
 
 
 class DataDownloader:
@@ -18,15 +20,13 @@ class DataDownloader:
         self.symbol = symbol.lower()
         self.time_horizon = time_horizon.lower()
         
-        # Database filename (1-minute data is the base)
-        self.db_filename = f"Data_DB.db"
+        # Initialize PostgreSQL connection
+        self.engine = get_pg_engine()
+        self.data_inserter = DataInserter(self.engine)
         
-        # Get project root path
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        self.db_path = os.path.join(project_root, self.db_filename)
-        
-        # Table name is always exchange_symbol_1m for DB
-        self.table_name = f"{self.exchange}_{self.symbol}_1m"
+        # Schema and table names for PostgreSQL
+        self.schema = f"{self.exchange}_data"
+        self.table_name = f"{self.symbol}_1m"  # Always use 1m as base
         
         # Parse time horizon to minutes
         self.time_horizon_minutes = self._parse_time_horizon(time_horizon)
@@ -39,7 +39,8 @@ class DataDownloader:
         print(f"  Exchange: {self.exchange}")
         print(f"  Symbol: {self.symbol}")
         print(f"  Time Horizon: {self.time_horizon} ({self.time_horizon_minutes} minutes)")
-        print(f"  Database: {self.db_path}")
+        print(f"  Database: PostgreSQL")
+        print(f"  Schema: {self.schema}")
         print(f"  Table: {self.table_name}")
         print()
 
@@ -67,23 +68,36 @@ class DataDownloader:
         Returns:
             bool: True if data exists, False otherwise
         """
-        if not os.path.exists(self.db_path):
-            return False
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            # Check if 1m table exists and has data
-            cursor.execute(f"""
-                SELECT COUNT(*) FROM sqlite_master 
-                WHERE type='table' AND name='{self.table_name}'
-            """)
-            if cursor.fetchone()[0] == 0:
-                conn.close()
-                return False
-            cursor.execute(f"SELECT COUNT(*) FROM {self.table_name}")
-            count = cursor.fetchone()[0]
-            conn.close()
-            return count > 0
+            with self.engine.connect() as conn:
+                # Check if schema exists
+                query = text(f"""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.schemata 
+                        WHERE schema_name = '{self.schema}'
+                    )
+                """)
+                result = conn.execute(query).fetchone()
+                if not result[0]:
+                    return False
+                
+                # Check if table exists
+                query = text(f"""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.tables 
+                        WHERE table_schema = '{self.schema}' 
+                        AND table_name = '{self.table_name}'
+                    )
+                """)
+                result = conn.execute(query).fetchone()
+                if not result[0]:
+                    return False
+                
+                # Check if table has data
+                query = text(f"SELECT COUNT(*) FROM {self.schema}.{self.table_name}")
+                result = conn.execute(query).fetchone()
+                return result[0] > 0
+                
         except Exception as e:
             print(f"Error checking data availability: {e}")
             return False
@@ -176,32 +190,33 @@ class DataDownloader:
                 print(f"No 1m data found for {self.symbol.upper()} in database")
                 print(f"Use auto_download=True to automatically download missing data")
                 return None, None
-        if not os.path.exists(self.db_path):
-            print(f"ERROR: Database not found: {self.db_path}")
-            return None, None
+        
         try:
-            # Connect to database
-            conn = sqlite3.connect(self.db_path)
-            # Always query the 1m table
-            query = f"SELECT datetime, open, high, low, close, volume FROM {self.table_name}"
-            params = []
+            # Connect to database and query the 1m table
+            query = f"SELECT datetime, open, high, low, close, volume FROM {self.schema}.{self.table_name}"
+            params = {}
+            
             if start_time or end_time:
                 conditions = []
                 if start_time:
-                    conditions.append("datetime >= ?")
-                    params.append(start_time.strftime('%Y-%m-%d %H:%M:%S'))
+                    conditions.append("datetime >= :start")
+                    params['start'] = start_time
                 if end_time:
-                    conditions.append("datetime <= ?")
-                    params.append(end_time.strftime('%Y-%m-%d %H:%M:%S'))
+                    conditions.append("datetime <= :end")
+                    params['end'] = end_time
                 if conditions:
                     query += " WHERE " + " AND ".join(conditions)
+            
             query += " ORDER BY datetime DESC"  # Get latest records first
+            
             # Fetch 1-minute data
-            df_1min = pd.read_sql_query(query, conn, params=params)
-            conn.close()
+            with self.engine.connect() as conn:
+                df_1min = pd.read_sql_query(text(query), conn, params=params)
+            
             if df_1min.empty:
                 print("No 1m data found in database")
                 return None, None
+            
             # Convert datetime
             df_1min['datetime'] = pd.to_datetime(df_1min['datetime'])
             df_1min.set_index('datetime', inplace=True)
@@ -285,7 +300,7 @@ class DataDownloader:
 if __name__ == "__main__":
     # Set your parameters here
     exchange = "binance"  # or "bybit"
-    symbol = "sol"
+    symbol = "btc"
     time_horizon = "1h"
     
     downloader = DataDownloader(exchange, symbol, time_horizon)

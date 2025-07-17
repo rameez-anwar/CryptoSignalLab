@@ -1,83 +1,101 @@
 import os
 import configparser
 import random
-from strategies.strategy_pipeline.utils.indicator_utils import get_available_indicators, get_enabled_indicators, random_select_indicators, IndicatorConfig
+import re
+from sqlalchemy import create_engine, MetaData, Table, Column, String, Boolean, text
+from dotenv import load_dotenv
 
-class StrategyConfigLoader:
-    def __init__(self, config_path):
-        self.config = configparser.ConfigParser()
-        self.config.read(config_path)
+# --- Load DB credentials from .env ---
+load_dotenv()
+user = os.getenv("PG_USER")
+password = os.getenv("PG_PASSWORD")
+host = os.getenv("PG_HOST")
+port = os.getenv("PG_PORT")
+db = os.getenv("PG_DB")
+engine = create_engine(f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}")
 
-    def get_general(self):
-        return self.config['general']
+# --- Read main strategy config ---
+config_path = os.path.join(os.path.dirname(__file__), 'strategy_config.ini')
+config = configparser.ConfigParser()
+config.read(config_path)
 
-    def get_data(self):
-        return self.config['DATA']
+general = config['general']
+data = config['DATA']
+limits = config['limits']
+max_files = int(limits.get('max_strategy_files', 10))
+base_filename = general.get('base_filename', 'strategy_v1')
 
-    def get_limits(self):
-        return self.config['limits']
+# Parse exchanges, symbols, and timeframes as lists
+exchanges = [e.strip() for e in data.get('exchange', '').split(',')]
+symbols = [s.strip() for s in data.get('symbols', '').split(',')]
+timeframes = [tf.strip() for tf in data.get('timeframes', '1h').split(',')]
 
-    def get_indicator_sections(self):
-        # Return all sections that are not general, DATA, or limits
-        return [s for s in self.config.sections() if s not in ['general', 'DATA', 'limits']]
+# --- Get indicator names from signals/technical_indicator_signal/config.ini ---
+indicator_config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '..', 'signals', 'technical_indicator_signal', 'config.ini')
+indicator_config = configparser.ConfigParser()
+indicator_config.read(indicator_config_path)
+indicator_names = []
+for section in indicator_config.sections():
+    if section == 'DATA':
+        continue
+    indicator_names.extend(indicator_config[section].keys())
+indicator_names = sorted(set(indicator_names))
 
-    def get_section(self, section):
-        return dict(self.config[section])
+# --- Prepare SQLAlchemy table definition ---
+metadata = MetaData()
+config_columns = [
+    Column('name', String, primary_key=True),
+    Column('exchange', String),
+    Column('symbol', String),
+    Column('time_horizon', String),
+]
+config_columns += [Column(ind, Boolean) for ind in indicator_names]
+config_table = Table('config_strategies', metadata, *config_columns, schema='public')
 
-class StrategyBuilder:
-    def __init__(self, base_filename, prefix, output_dir):
-        self.base_filename = base_filename
-        self.prefix = prefix
-        self.output_dir = output_dir
-        os.makedirs(self.output_dir, exist_ok=True)
+# --- Create table if not exists ---
+with engine.connect() as conn:
+    if not engine.dialect.has_table(conn, 'config_strategies', schema='public'):
+        metadata.create_all(engine, tables=[config_table])
 
-    def build_and_save(self, strategy_dict, idx):
-        filename = f"{self.prefix}{self.base_filename}_{idx}.ini"
-        filepath = os.path.join(self.output_dir, filename)
-        config = configparser.ConfigParser()
-        for section, values in strategy_dict.items():
-            config[section] = values
-        with open(filepath, 'w') as f:
-            config.write(f)
-        return filepath
+def get_max_strategy_number(base_filename, exchange, symbol, tf):
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT name FROM public.config_strategies WHERE name LIKE :pattern AND exchange = :exchange AND symbol = :symbol AND time_horizon = :tf"),
+            {"pattern": f"{base_filename}_%", "exchange": exchange, "symbol": symbol, "tf": tf}
+        )
+        max_num = 0
+        for row in result:
+            match = re.search(rf"{re.escape(base_filename)}_(\\d+)$", row[0])
+            if match:
+                num = int(match.group(1))
+                if num > max_num:
+                    max_num = num
+        return max_num
 
-class StrategyGenerator:
-    def __init__(self, config_path, output_dir):
-        self.loader = StrategyConfigLoader(config_path)
-        self.output_dir = output_dir
-        self.indicator_catalog = get_available_indicators()
+# --- Generate and insert new strategies ---
+for exchange in exchanges:
+    for symbol in symbols:
+        for tf in timeframes:
+            max_num = get_max_strategy_number(base_filename, exchange, symbol, tf)
+            final_num = max_num + max_files
+            width = max(2, len(str(final_num)))
+            for idx in range(max_files):
+                strat_num = max_num + idx + 1
+                strat_name = f"{base_filename}_{exchange}_{symbol}_{tf}_{str(strat_num).zfill(width)}"
+                # Randomly enable/disable each indicator
+                indicator_values = {ind: random.choice([True, False]) for ind in indicator_names}
+                config_row = {
+                    'name': strat_name,
+                    'exchange': exchange,
+                    'symbol': symbol,
+                    'time_horizon': tf,
+                    **indicator_values
+                }
+                print(f"Generated strategy: {config_row}")
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(config_table.insert().values(**config_row))
+                except Exception as e:
+                    print(f"Error inserting strategy {strat_name}: {e}")
 
-    def generate(self):
-        general = self.loader.get_general()
-        data = self.loader.get_data()
-        limits = self.loader.get_limits()
-        max_files = int(limits.get('max_strategy_files', 10))
-        base_filename = general.get('base_filename', 'strategy')
-        prefix = general.get('prefix', 'strat_')
-        builder = StrategyBuilder(base_filename, prefix, self.output_dir)
-
-        # For demo: randomly select 3-5 indicators per strategy
-        for idx in range(1, max_files + 1):
-            strategy = {
-                'general': dict(general),
-                'DATA': dict(data),
-                'indicators': {}
-            }
-            # For now, enable all available indicators
-            enabled = list(self.indicator_catalog.keys())
-            n_ind = random.randint(3, 5)
-            selected = random_select_indicators(enabled, n_ind)
-            for ind_name in selected:
-                ind_cfg = self.indicator_catalog[ind_name]
-                window = ind_cfg.random_window()
-                if window:
-                    strategy['indicators'][ind_name] = str(window)
-                else:
-                    strategy['indicators'][ind_name] = 'enabled'
-            builder.build_and_save(strategy, idx)
-
-if __name__ == "__main__":
-    config_path = os.path.join(os.path.dirname(__file__), 'strategy_config.ini')
-    output_dir = os.path.dirname(__file__)
-    generator = StrategyGenerator(config_path, output_dir)
-    generator.generate()
+print(f"\nInserted {max_files} strategies for each (exchange, symbol, timeframe) combination into public.config_strategies.") 
