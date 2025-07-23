@@ -1,7 +1,7 @@
 import pandas as pd
 import logging
-from sqlalchemy import create_engine, Column, Float, DateTime, MetaData, Table, inspect
-from sqlalchemy.exc import ProgrammingError, OperationalError
+from sqlalchemy import create_engine, Column, Float, DateTime, MetaData, Table, inspect, text
+from sqlalchemy.exc import ProgrammingError, OperationalError, IntegrityError
 import time
 
 class DataInserter:
@@ -27,7 +27,7 @@ class DataInserter:
             inspector = inspect(self.engine)
             if not inspector.has_schema(schema_name):
                 with self.engine.connect() as conn:
-                    conn.execute(f"CREATE SCHEMA {schema_name}")
+                    conn.execute(text(f"CREATE SCHEMA {schema_name}"))
                     conn.commit()
             else:
                 pass # No logging here
@@ -62,7 +62,88 @@ class DataInserter:
 
     def save_dataframe(self, df: pd.DataFrame, exchange: str, symbol: str, interval: str):
         """
-        Save DataFrame to PostgreSQL with bulk insert.
+        Save DataFrame to PostgreSQL with upsert functionality to handle duplicates.
+        Args:
+            df: DataFrame with columns: datetime, open, high, low, close, volume
+            exchange: Exchange name (e.g., 'binance')
+            symbol: Trading symbol (e.g., 'BTC')
+            interval: Timeframe (e.g., '1m')
+        """
+        if df.empty:
+            return
+
+        table_name = f"{symbol.lower()}_{interval}"
+        schema = f"{exchange.lower()}_data"
+        self._schema_exists(schema)
+        self._create_table(table_name, schema)
+
+        try:
+            start_time = time.time()
+            df_to_save = df.copy()
+            df_to_save['datetime'] = pd.to_datetime(df_to_save['datetime'])
+            df_to_save = df_to_save.sort_values('datetime').drop_duplicates(subset=['datetime'])
+
+            # Use upsert functionality to handle duplicates
+            self._upsert_dataframe(df_to_save, schema, table_name)
+            
+            print(f"Successfully processed {len(df_to_save)} records for {schema}.{table_name}")
+            
+        except Exception as e:
+            print(f"Error saving dataframe: {e}")
+            raise
+
+    def _upsert_dataframe(self, df: pd.DataFrame, schema: str, table_name: str):
+        """
+        Insert DataFrame with upsert functionality using PostgreSQL's ON CONFLICT.
+        Args:
+            df: DataFrame to insert
+            schema: Database schema
+            table_name: Table name
+        """
+        if df.empty:
+            return
+
+        # Prepare data for insertion
+        data_to_insert = []
+        for _, row in df.iterrows():
+            data_to_insert.append({
+                'datetime': row['datetime'],
+                'open': float(row['open']),
+                'high': float(row['high']),
+                'low': float(row['low']),
+                'close': float(row['close']),
+                'volume': float(row['volume'])
+            })
+
+        # Use PostgreSQL's ON CONFLICT for upsert
+        upsert_query = text(f"""
+            INSERT INTO {schema}.{table_name} (datetime, open, high, low, close, volume)
+            VALUES (:datetime, :open, :high, :low, :close, :volume)
+            ON CONFLICT (datetime) 
+            DO UPDATE SET
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                volume = EXCLUDED.volume
+        """)
+
+        try:
+            with self.engine.connect() as conn:
+                # Execute in batches to avoid memory issues
+                batch_size = 1000
+                for i in range(0, len(data_to_insert), batch_size):
+                    batch = data_to_insert[i:i + batch_size]
+                    conn.execute(upsert_query, batch)
+                    conn.commit()
+                    
+        except Exception as e:
+            print(f"Error in upsert operation: {e}")
+            raise
+
+    def save_dataframe_legacy(self, df: pd.DataFrame, exchange: str, symbol: str, interval: str):
+        """
+        Legacy save method using to_sql (kept for backward compatibility).
         Args:
             df: DataFrame with columns: datetime, open, high, low, close, volume
             exchange: Exchange name (e.g., 'binance')

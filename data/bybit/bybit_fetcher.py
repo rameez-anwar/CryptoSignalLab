@@ -18,7 +18,7 @@ class BybitDataFetcher:
             timeframe: Timeframe (e.g., '1m', '5m')
         """
         self.client = HTTP(
-            testnet=False,
+            demo=True,
             api_key=api_key,
             api_secret=api_secret
         )
@@ -271,7 +271,7 @@ class BybitDataFetcher:
             
             # Fetch kline data from Bybit
             klines = self.client.get_kline(
-                category="spot",
+                category="linear",
                 symbol=symbol_pair,
                 interval=interval,
                 start=start_timestamp,

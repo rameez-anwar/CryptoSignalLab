@@ -102,11 +102,78 @@ class DataDownloader:
             print(f"Error checking data availability: {e}")
             return False
 
+    def _get_existing_data_range(self):
+        """
+        Get the date range of existing data in the database
+        Returns:
+            tuple: (min_date, max_date) or (None, None) if no data exists
+        """
+        try:
+            with self.engine.connect() as conn:
+                query = text(f"SELECT MIN(datetime), MAX(datetime) FROM {self.schema}.{self.table_name}")
+                result = conn.execute(query).fetchone()
+                if result and result[0] and result[1]:
+                    return (pd.to_datetime(result[0]), pd.to_datetime(result[1]))
+                else:
+                    return (None, None)
+        except Exception as e:
+            print(f"Error getting existing data range: {e}")
+            return (None, None)
+
+    def _get_missing_data_periods(self, start_time, end_time):
+        """
+        Identify missing data periods between start_time and end_time
+        Returns:
+            list: List of tuples (gap_start, gap_end) representing missing data periods
+        """
+        try:
+            with self.engine.connect() as conn:
+                # Get all existing data points in the range
+                query = text(f"""
+                    SELECT datetime 
+                    FROM {self.schema}.{self.table_name}
+                    WHERE datetime >= :start AND datetime <= :end
+                    ORDER BY datetime ASC
+                """)
+                result = conn.execute(query, {'start': start_time, 'end': end_time})
+                existing_times = [pd.to_datetime(row[0]) for row in result.fetchall()]
+                
+                if not existing_times:
+                    return [(start_time, end_time)]
+                
+                gaps = []
+                
+                # Check for gap before first existing data point
+                if existing_times[0] > start_time:
+                    gaps.append((start_time, existing_times[0]))
+                
+                # Check for gaps between existing data points
+                for i in range(len(existing_times) - 1):
+                    current_time = existing_times[i]
+                    next_time = existing_times[i + 1]
+                    expected_next = current_time + datetime.timedelta(minutes=1)
+                    
+                    if next_time > expected_next:
+                        gaps.append((expected_next, next_time))
+                
+                # Check for gap after last existing data point
+                if existing_times[-1] < end_time:
+                    last_expected = existing_times[-1] + datetime.timedelta(minutes=1)
+                    if last_expected <= end_time:
+                        gaps.append((last_expected, end_time))
+                
+                return gaps
+                
+        except Exception as e:
+            print(f"Error getting missing data periods: {e}")
+            return [(start_time, end_time)]
+
     def _download_missing_data(self, start_time=None, end_time=None):
         """
         Download missing 1m data from the exchange API
         """
-        print(f"Wait, fetching {self.symbol.upper()} data from {self.exchange.upper()}...")
+        print(f"Checking for missing data for {self.symbol.upper()} from {self.exchange.upper()}...")
+        
         # Get API credentials from environment based on exchange
         if self.exchange == "binance":
             self.api_key = os.getenv('API_KEY')
@@ -117,6 +184,7 @@ class DataDownloader:
         else:
             print(f"ERROR: Unsupported exchange '{self.exchange}'. Supported exchanges: binance, bybit")
             return False
+            
         if not self.api_key or not self.api_secret:
             print(f"ERROR: API credentials are required for downloading data from {self.exchange}")
             if self.exchange == "binance":
@@ -124,14 +192,65 @@ class DataDownloader:
             elif self.exchange == "bybit":
                 print("Set bybit_api and bybit_secret environment variables for Bybit")
             return False
+
         try:
             # Set default time range if not provided
             if end_time is None:
                 end_time = datetime.datetime.now()
             if start_time is None:
                 start_time = end_time - datetime.timedelta(days=30)  # Default to last 30 days
-            print(f"Downloading data from {start_time} to {end_time}")
-            # Always download 1m data as base
+
+            print(f"Checking data availability from {start_time} to {end_time}")
+
+            # Check if we have existing data
+            existing_min, existing_max = self._get_existing_data_range()
+            
+            if existing_min is None or existing_max is None:
+                # No existing data - fetch from start
+                print(f"No existing data found for {self.symbol.upper()}. Fetching from start...")
+                return self._fetch_new_data(start_time, end_time)
+            else:
+                # We have existing data - check for gaps and fetch missing data
+                print(f"Existing data found: {existing_min} to {existing_max}")
+                
+                # Identify missing data periods
+                missing_periods = self._get_missing_data_periods(start_time, end_time)
+                
+                # Skip gaps less than 1 minute
+                filtered_periods = []
+                for gap_start, gap_end in missing_periods:
+                    if (gap_end - gap_start) >= datetime.timedelta(minutes=1):
+                        filtered_periods.append((gap_start, gap_end))
+                
+                if not filtered_periods:
+                    print("All requested data already exists in database or only trivial gaps found.")
+                    return True
+                
+                print(f"Found {len(filtered_periods)} missing data periods:")
+                for i, (gap_start, gap_end) in enumerate(filtered_periods, 1):
+                    print(f"  {i}. {gap_start} to {gap_end}")
+                
+                # Fetch missing data for each period
+                success = True
+                for gap_start, gap_end in filtered_periods:
+                    print(f"\nFetching missing data: {gap_start} to {gap_end}")
+                    fetch_result = self._fetch_new_data(gap_start, gap_end)
+                    if fetch_result is False:
+                        success = False
+                        print(f"Failed to fetch data for period {gap_start} to {gap_end}")
+                
+                return success
+
+        except Exception as e:
+            print(f"Error downloading missing data: {e}")
+            return False
+
+    def _fetch_new_data(self, start_time, end_time):
+        """
+        Fetch new data from the exchange API
+        """
+        try:
+            # Initialize the appropriate fetcher
             if self.exchange == "binance":
                 fetcher = BinanceDataFetcher(
                     api_key=self.api_key,
@@ -149,20 +268,24 @@ class DataDownloader:
             else:
                 print(f"ERROR: Unsupported exchange '{self.exchange}'")
                 return False
+
+            # Fetch data with use_cache=False to force fresh download
             df = fetcher.fetch_data(
                 start_time=start_time,
                 end_time=end_time,
                 drop_last_candle=True,
-                use_cache=True
+                use_cache=False  # Force fresh download
             )
+            
             if df is not None and not df.empty:
                 print(f"Successfully downloaded {len(df)} records for {self.symbol.upper()}")
                 return True
             else:
-                print(f"No data downloaded for {self.symbol.upper()}")
-                return False
+                print(f"No data downloaded for {self.symbol.upper()} (gap {start_time} to {end_time}) - skipping.")
+                return None  # Not a failure, just nothing to do
+                
         except Exception as e:
-            print(f"Error downloading data: {e}")
+            print(f"Error fetching new data: {e}")
             return False
 
     def fetch_data(self, start_time=None, end_time=None, num_records=None, auto_download=True):
@@ -190,6 +313,17 @@ class DataDownloader:
                 print(f"No 1m data found for {self.symbol.upper()} in database")
                 print(f"Use auto_download=True to automatically download missing data")
                 return None, None
+        else:
+            # Data exists, check for missing data and download if needed
+            if auto_download:
+                print(f"1m data for {self.symbol.upper()} found in database")
+                print(f"Checking for missing data and downloading if needed...")
+                if self._download_missing_data(start_time, end_time):
+                    print(f"Data check and update completed successfully!")
+                    time.sleep(1)
+                else:
+                    print(f"Failed to update missing data for {self.symbol.upper()}")
+                    # Continue anyway as we have some data
         
         try:
             # Connect to database and query the 1m table

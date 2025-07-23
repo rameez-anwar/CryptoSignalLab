@@ -26,7 +26,10 @@ class BinanceDataFetcher:
 
     def _insert_data_to_db(self, df: pd.DataFrame):
         if df.empty:
+            print("No data to insert.")
             return
+        print(f"Inserting {len(df)} records into {self.schema}.{self.table_name}.")
+        print("Datetimes to insert:", list(df['datetime']))
         self.data_inserter.save_dataframe(df, 'binance', self.symbol, self.timeframe)
 
     def _get_existing_data_range(self):
@@ -79,11 +82,16 @@ class BinanceDataFetcher:
 
     def _fetch_missing_data(self, start_time: datetime.datetime, end_time: datetime.datetime) -> pd.DataFrame:
         gaps = self._get_existing_data_gaps(start_time, end_time)
-        if not gaps:
-            print("All requested data already exists in database")
+        # Skip gaps less than 1 minute
+        filtered_gaps = []
+        for gap_start, gap_end in gaps:
+            if (gap_end - gap_start) >= datetime.timedelta(minutes=1):
+                filtered_gaps.append((gap_start, gap_end))
+        if not filtered_gaps:
+            print("All requested data already exists in database or only trivial gaps found.")
             return pd.DataFrame()
         all_missing_data = []
-        for gap_start, gap_end in gaps:
+        for gap_start, gap_end in filtered_gaps:
             print(f"Fetching missing data: {gap_start} to {gap_end}")
             gap_data = self._fetch_all_data(self.symbol, gap_start, gap_end, self.timeframe)
             if not gap_data.empty:

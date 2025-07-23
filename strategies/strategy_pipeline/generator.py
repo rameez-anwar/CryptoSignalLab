@@ -73,15 +73,15 @@ def get_max_strategy_number(base_filename, exchange, symbol, tf):
         return max_num
 
 # --- Generate and insert new strategies ---
+global_strat_num = 1
+num_combinations = len(exchanges) * len(symbols) * len(timeframes)
+final_num = num_combinations * max_files
+width = max(2, len(str(final_num)))
 for exchange in exchanges:
     for symbol in symbols:
         for tf in timeframes:
-            max_num = get_max_strategy_number(base_filename, exchange, symbol, tf)
-            final_num = max_num + max_files
-            width = max(2, len(str(final_num)))
             for idx in range(max_files):
-                strat_num = max_num + idx + 1
-                strat_name = f"{base_filename}_{exchange}_{symbol}_{tf}_{str(strat_num).zfill(width)}"
+                strat_name = f"strategy_{str(global_strat_num).zfill(width)}"
                 # Randomly enable/disable each indicator
                 indicator_values = {ind: random.choice([True, False]) for ind in indicator_names}
                 config_row = {
@@ -97,5 +97,6 @@ for exchange in exchanges:
                         conn.execute(config_table.insert().values(**config_row))
                 except Exception as e:
                     print(f"Error inserting strategy {strat_name}: {e}")
+                global_strat_num += 1
 
 print(f"\nInserted {max_files} strategies for each (exchange, symbol, timeframe) combination into public.config_strategies.") 
