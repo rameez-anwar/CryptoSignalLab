@@ -37,110 +37,130 @@ class Backtester:
         position_type = None
         entry_price = 0.0
         results = []
-        pnl_sum = 0.0
+        pnl_sum = 0.0  # Cumulative sum of net pnl_percent
+        tp_price = None
+        sl_price = None
 
-        # Use itertuples for faster iteration
         for row in df.itertuples():
-            signal = row.signal
+            current_time = row.Index
+            signal = getattr(row, 'signal', 0)
             open_price = row.open
-            high = row.high
-            low = row.low
-            close = row.close
-            current_time = row.Index  # Index is the datetime
+            high_price = row.high
+            low_price = row.low
 
-            # Entry
+            # Handle direction reversal or continue existing trade
+            if signal in [1, -1] and in_position:
+                is_direction_change = (signal == 1 and position_type == 'short') or (signal == -1 and position_type == 'long')
+
+                # Close current position only if direction changes
+                if is_direction_change:
+                    if position_type == 'long':
+                        if low_price <= sl_price:
+                            exit_price = low_price
+                            action = 'sl'
+                        elif high_price >= tp_price:
+                            exit_price = high_price
+                            action = 'tp'
+                        else:
+                            exit_price = open_price
+                            action = 'direction_change'
+                        gross_pnl_percent = (exit_price - entry_price) / entry_price
+                    else:  # short
+                        if high_price >= sl_price:
+                            exit_price = high_price
+                            action = 'sl'
+                        elif low_price <= tp_price:
+                            exit_price = low_price
+                            action = 'tp'
+                        else:
+                            exit_price = open_price
+                            action = 'direction_change'
+                        gross_pnl_percent = (entry_price - exit_price) / entry_price
+
+                    net_pnl_percent = gross_pnl_percent - self.fee_percent
+                    self.balance += self.position_size * net_pnl_percent
+                    pnl_sum += net_pnl_percent * 100
+
+                    results.append({
+                        'datetime': current_time,
+                        'action': action,
+                        'buy_price': entry_price,
+                        'sell_price': exit_price,
+                        'pnl_percent': net_pnl_percent * 100,
+                        'pnl_sum': pnl_sum,
+                        'balance': self.balance
+                    })
+                    in_position = False
+                else:
+                    continue
+
+            # Enter new trade
             if not in_position and signal in [1, -1]:
                 in_position = True
                 position_type = 'long' if signal == 1 else 'short'
                 entry_price = open_price
-                entry_time = current_time
-                fee = self.fee_percent * self.balance
-                self.balance -= fee  # Entry fee
+                self.position_size = self.balance
+                fee = self.fee_percent * self.position_size
+                self.balance -= fee
+                # Reflect entry fee in pnl_percent, no separate balance deduction
+                pnl_percent = -self.fee_percent
+                pnl_sum += pnl_percent * 100
+                tp_price = entry_price * (1 + self.tp) if position_type == 'long' else entry_price * (1 - self.tp)
+                sl_price = entry_price * (1 - self.sl) if position_type == 'long' else entry_price * (1 + self.sl)
                 results.append({
                     'datetime': current_time,
                     'action': 'buy' if signal == 1 else 'sell',
-                    'price': open_price,
-                    'pnl_percent': 0.0,
+                    'buy_price': open_price,
+                    'sell_price': 0.0,
+                    'pnl_percent': pnl_percent * 100,
                     'pnl_sum': pnl_sum,
                     'balance': self.balance
                 })
                 continue
 
-            # Exit logic
+            # Check TP/SL for existing position
             if in_position:
-                # Direction change: close at close price, then open new trade
-                if (position_type == 'long' and signal == -1) or (position_type == 'short' and signal == 1):
-                    pnl_percent = (close - entry_price) / entry_price if position_type == 'long' else (entry_price - close) / entry_price
-                    fee = self.fee_percent * self.balance
-                    self.balance += self.balance * pnl_percent
-                    self.balance -= fee
-                    pnl_sum += self.balance - self.initial_balance - pnl_sum
-                    results.append({
-                        'datetime': current_time,
-                        'action': 'direction changed',
-                        'price': close,
-                        'pnl_percent': pnl_percent * 100,
-                        'pnl_sum': pnl_sum,
-                        'balance': self.balance
-                    })
-                    # Open new trade
-                    in_position = True
-                    position_type = 'long' if signal == 1 else 'short'
-                    entry_price = open_price
-                    entry_time = current_time
-                    fee = self.fee_percent * self.balance
-                    self.balance -= fee
-                    results.append({
-                        'datetime': current_time,
-                        'action': 'buy' if signal == 1 else 'sell',
-                        'price': open_price,
-                        'pnl_percent': 0.0,
-                        'pnl_sum': pnl_sum,
-                        'balance': self.balance
-                    })
-                    continue
-                # TP/SL logic
                 if position_type == 'long':
-                    tp_price = entry_price * (1 + self.tp)
-                    sl_price = entry_price * (1 - self.sl)
-                    if high >= tp_price:
-                        exit_price = high
-                        pnl_percent = (exit_price - entry_price) / entry_price
+                    if low_price <= sl_price:
+                        exit_price = low_price
+                        action = 'sl'
+                        gross_pnl_percent = (exit_price - entry_price) / entry_price
                         in_position = False
-                        exit_action = 'tp'
-                    elif low <= sl_price:
-                        exit_price = low
-                        pnl_percent = (exit_price - entry_price) / entry_price
+                    elif high_price >= tp_price:
+                        exit_price = high_price
+                        action = 'tp'
+                        gross_pnl_percent = (exit_price - entry_price) / entry_price
                         in_position = False
-                        exit_action = 'sl'
                     else:
                         continue
                 else:  # short
-                    tp_price = entry_price * (1 - self.tp)
-                    sl_price = entry_price * (1 + self.sl)
-                    if low <= tp_price:
-                        exit_price = low
-                        pnl_percent = (entry_price - exit_price) / entry_price
+                    if high_price >= sl_price:
+                        exit_price = high_price
+                        action = 'sl'
+                        gross_pnl_percent = (entry_price - exit_price) / entry_price
                         in_position = False
-                        exit_action = 'tp'
-                    elif high >= sl_price:
-                        exit_price = high
-                        pnl_percent = (entry_price - exit_price) / entry_price
+                    elif low_price <= tp_price:
+                        exit_price = low_price
+                        action = 'tp'
+                        gross_pnl_percent = (entry_price - exit_price) / entry_price
                         in_position = False
-                        exit_action = 'sl'
                     else:
                         continue
-                fee = self.fee_percent * self.balance
-                self.balance += self.balance * pnl_percent
-                self.balance -= fee
-                pnl_sum += self.balance - self.initial_balance - pnl_sum
-                results.append({
-                    'datetime': current_time,
-                    'action': exit_action,
-                    'price': exit_price,
-                    'pnl_percent': pnl_percent * 100,
-                    'pnl_sum': pnl_sum,
-                    'balance': self.balance
-                })
+
+                if not in_position:
+                    net_pnl_percent = gross_pnl_percent - self.fee_percent
+                    fee = self.fee_percent * self.position_size
+                    self.balance += self.position_size * net_pnl_percent
+                    pnl_sum += net_pnl_percent * 100
+
+                    results.append({
+                        'datetime': current_time,
+                        'action': action,
+                        'buy_price': entry_price,
+                        'sell_price': exit_price,
+                        'pnl_percent': net_pnl_percent * 100,
+                        'pnl_sum': pnl_sum,
+                        'balance': self.balance
+                    })
 
         return pd.DataFrame(results)

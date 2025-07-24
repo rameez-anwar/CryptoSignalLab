@@ -22,9 +22,9 @@ def main(strategy_name: str):
     backtester = Backtester(ohlcv_df=ohlcv, signals_df=signals)
     result = backtester.run()
     if not result.empty:
-        result[['price', 'pnl_percent', 'pnl_sum', 'balance']] = result[['price', 'pnl_percent', 'pnl_sum', 'balance']].round(2)
+        result[['buy_price', 'sell_price', 'pnl_percent', 'pnl_sum', 'balance']] = result[['buy_price', 'sell_price', 'pnl_percent', 'pnl_sum', 'balance']].round(2)
         print(f"\n Final Balance: {result.iloc[-1]['balance']:.2f}")
-        print(f"Total Trades: {len(result[result['action'].isin(['tp', 'sl'])])}")
+        print(f"Total Trades: {len(result[result['action'].isin(['tp', 'sl', 'direction_change'])])}")
         print(result.tail(10))
         # Save to DB as strategies_backtest.{strategy_name}_backtest
         table_name = f"{strategy_name}_backtest"
