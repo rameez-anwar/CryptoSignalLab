@@ -433,9 +433,9 @@ class DataDownloader:
 
 if __name__ == "__main__":
     # Set your parameters here
-    exchange = "binance"  # or "bybit"
+    exchange = "bybit"  # or "bybit"
     symbol = "btc"
-    time_horizon = "1h"
+    time_horizon = "1m"
     
     downloader = DataDownloader(exchange, symbol, time_horizon)
     

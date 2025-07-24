@@ -4,10 +4,10 @@ from backtest import Backtester
 
 def main(strategy_name: str):
     engine = get_pg_engine()
-
+    print("Fetching data from DB...")
     # Directly fetch from DB
     signals_table = f"signals.{strategy_name}"
-    ohlcv_table = "binance_data.btc_1m"  # Change as needed
+    ohlcv_table = "bybit_data.btc_1m"  
 
     signals = pd.read_sql_query(f"SELECT * FROM {signals_table}", engine)
     ohlcv = pd.read_sql_query(f"SELECT * FROM {ohlcv_table}", engine)
@@ -16,10 +16,11 @@ def main(strategy_name: str):
     signals['datetime'] = pd.to_datetime(signals['datetime'])
     ohlcv = ohlcv.sort_values('datetime')
     signals = signals.sort_values('datetime')
-
+    print(f"ohlcv: {ohlcv.head()}")
+    print(f"signals: {signals.head()}")
+    print("Backtesting...")
     backtester = Backtester(ohlcv_df=ohlcv, signals_df=signals)
     result = backtester.run()
-
     if not result.empty:
         result[['price', 'pnl_percent', 'pnl_sum', 'balance']] = result[['price', 'pnl_percent', 'pnl_sum', 'balance']].round(2)
         print(f"\n Final Balance: {result.iloc[-1]['balance']:.2f}")
@@ -33,4 +34,4 @@ def main(strategy_name: str):
         print("No trades were executed.")
 
 if __name__ == "__main__":
-    main("strategy_01")
+    main("new")

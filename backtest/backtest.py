@@ -9,23 +9,25 @@ class Backtester:
         self.balance = initial_balance
         self.initial_balance = initial_balance
         self.fee_percent = fee_percent
+        self.position_size = initial_balance  # Will be updated to current balance per trade
 
     def merge_data(self):
         df = self.ohlcv.copy()
-        df = df.reset_index() if df.index.name == 'datetime' else df
-        signals = self.signals.reset_index() if self.signals.index.name == 'datetime' else self.signals
+        signals = self.signals.copy()
+
+        if df.index.name == 'datetime':
+            df = df.reset_index()
+        if signals.index.name == 'datetime':
+            signals = signals.reset_index()
 
         df['datetime'] = pd.to_datetime(df['datetime']).dt.floor('min')
         signals['datetime'] = pd.to_datetime(signals['datetime']).dt.floor('min')
 
-        # If your signals column is not 'final_signal', change to 'signal'
-        if 'final_signal' in signals.columns:
-            signals = signals.rename(columns={'final_signal': 'signal'})
-        elif 'signal' not in signals.columns:
-            raise Exception("Signals DataFrame must have a 'signal' column.")
-
-        df = df.merge(signals[['datetime', 'signal']], how='left', on='datetime')
-        df['signal'] = df['signal'].fillna(0)
+        # Merge and fill missing signals
+        df = df.merge(signals, how='left', on='datetime')
+        if 'final_signal' in df.columns:
+            df = df.rename(columns={'final_signal': 'signal'})
+        # df['signal'] = df['signal'].fillna(0)
         df = df.set_index('datetime')
         return df
 
@@ -37,12 +39,14 @@ class Backtester:
         results = []
         pnl_sum = 0.0
 
-        for current_time, row in df.iterrows():
-            signal = row['signal']
-            open_price = row['open']
-            high = row['high']
-            low = row['low']
-            close = row['close']
+        # Use itertuples for faster iteration
+        for row in df.itertuples():
+            signal = row.signal
+            open_price = row.open
+            high = row.high
+            low = row.low
+            close = row.close
+            current_time = row.Index  # Index is the datetime
 
             # Entry
             if not in_position and signal in [1, -1]:
@@ -100,14 +104,14 @@ class Backtester:
                     tp_price = entry_price * (1 + self.tp)
                     sl_price = entry_price * (1 - self.sl)
                     if high >= tp_price:
-                        pnl_percent = (tp_price - entry_price) / entry_price
+                        exit_price = high
+                        pnl_percent = (exit_price - entry_price) / entry_price
                         in_position = False
-                        exit_price = tp_price
                         exit_action = 'tp'
                     elif low <= sl_price:
-                        pnl_percent = (sl_price - entry_price) / entry_price
+                        exit_price = low
+                        pnl_percent = (exit_price - entry_price) / entry_price
                         in_position = False
-                        exit_price = sl_price
                         exit_action = 'sl'
                     else:
                         continue
@@ -115,14 +119,14 @@ class Backtester:
                     tp_price = entry_price * (1 - self.tp)
                     sl_price = entry_price * (1 + self.sl)
                     if low <= tp_price:
-                        pnl_percent = (entry_price - tp_price) / entry_price
+                        exit_price = low
+                        pnl_percent = (entry_price - exit_price) / entry_price
                         in_position = False
-                        exit_price = tp_price
                         exit_action = 'tp'
                     elif high >= sl_price:
-                        pnl_percent = (entry_price - sl_price) / entry_price
+                        exit_price = high
+                        pnl_percent = (entry_price - exit_price) / entry_price
                         in_position = False
-                        exit_price = sl_price
                         exit_action = 'sl'
                     else:
                         continue
