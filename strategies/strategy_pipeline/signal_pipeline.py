@@ -8,6 +8,8 @@ from indicators.technical_indicator import IndicatorCalculator
 from signals.technical_indicator_signal.signal_generator import SignalGenerator
 from strategies.strategy_pipeline.utils.indicator_utils import get_all_indicator_configs
 import random
+import configparser
+import datetime
 
 # --- Load DB credentials from .env ---
 load_dotenv()
@@ -17,6 +19,19 @@ host = os.getenv("PG_HOST")
 port = os.getenv("PG_PORT")
 db = os.getenv("PG_DB")
 engine = create_engine(f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}")
+
+# --- Load strategy config for date range ---
+config_path = os.path.join(os.path.dirname(__file__), 'strategy_config.ini')
+config = configparser.ConfigParser()
+config.read(config_path)
+data_section = config['DATA']
+start_date_str = data_section.get('start_date', '2020-01-01')
+end_date_str = data_section.get('end_date', 'now')
+start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
+if end_date_str == "now":
+    end_date = datetime.datetime.now()
+else:
+    end_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
 
 # --- Create signals schema if not exists ---
 metadata = MetaData()
@@ -82,6 +97,11 @@ for strat in strategies:
         df_with_indicators = df_with_indicators.reset_index()
         if 'index' in df_with_indicators.columns and 'datetime' not in df_with_indicators.columns:
             df_with_indicators = df_with_indicators.rename(columns={'index': 'datetime'})
+    # Filter by date range from config
+    df_with_indicators = df_with_indicators[(df_with_indicators['datetime'] >= start_date) & (df_with_indicators['datetime'] <= end_date)]
+    if df_with_indicators.empty:
+        print(f"No data in date range for {strategy_name}, skipping.")
+        continue
     # Generate signals for enabled indicators
     sg = SignalGenerator(df_with_indicators, indicator_names=[col for col in df_with_indicators.columns if col in enabled_inds or any(col.startswith(x) for x in enabled_inds)])
     signal_df = sg.generate_signals()
