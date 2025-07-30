@@ -7,7 +7,7 @@ def main(strategy_name: str):
     print("Fetching data from DB...")
     # Directly fetch from DB
     signals_table = f"signals.{strategy_name}"
-    ohlcv_table = "bybit_data.btc_1m"  
+    ohlcv_table = "binance_data.btc_1m"  
 
     signals = pd.read_sql_query(f"SELECT * FROM {signals_table}", engine)
     ohlcv = pd.read_sql_query(f"SELECT * FROM {ohlcv_table}", engine)
@@ -34,4 +34,4 @@ def main(strategy_name: str):
         print("No trades were executed.")
 
 if __name__ == "__main__":
-    main("new")
+    main("strategy_01")
