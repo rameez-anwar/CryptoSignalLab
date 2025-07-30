@@ -123,7 +123,7 @@ def get_ohlcv_data(symbol, timeframe, apply_date_filter=True):
     return df
 
 def run_direct_backtest(ohlcv_df, signals_df, tp=None, sl=None, initial_balance=1000, fee_percent=0.0005):
-    """Run backtest using the Backtester class"""
+    """Run backtest using the original Backtester class"""
     try:
         # Prepare data
         ohlcv_backtest = ohlcv_df.copy()
@@ -137,23 +137,21 @@ def run_direct_backtest(ohlcv_df, signals_df, tp=None, sl=None, initial_balance=
         ohlcv_backtest = ohlcv_backtest.sort_values('datetime')
         signals_backtest = signals_backtest.sort_values('datetime')
         
-        # Create Backtester instance
-        if tp is not None and sl is not None:
-            backtester = Backtester(
-                ohlcv_df=ohlcv_backtest, 
-                signals_df=signals_backtest,
-                tp=tp, 
-                sl=sl,
-                initial_balance=initial_balance,
-                fee_percent=fee_percent
-            )
-        else:
-            backtester = Backtester(
-                ohlcv_df=ohlcv_backtest, 
-                signals_df=signals_backtest,
-                initial_balance=initial_balance,
-                fee_percent=fee_percent
-            )
+        # Use default TP/SL if not provided
+        if tp is None:
+            tp = 0.02
+        if sl is None:
+            sl = 0.045
+        
+        # Create Backtester instance with original parameters
+        backtester = Backtester(
+            ohlcv_df=ohlcv_backtest, 
+            signals_df=signals_backtest,
+            tp=tp, 
+            sl=sl,
+            initial_balance=initial_balance,
+            fee_percent=fee_percent
+        )
         
         # Run backtest
         result = backtester.run()
@@ -525,7 +523,7 @@ def save_optimized_strategies(optimized_strategies, config_table):
     print(f"Successfully saved {saved_count} optimized strategies")
 
 def run_backtest_on_saved_strategies():
-    """Execute backtest using the Backtester class with JSON config"""
+    """Execute backtest using the original Backtester class with proper database schema handling"""
     print("Running backtests on saved strategies...")
     
     with engine.connect() as conn:
@@ -556,31 +554,35 @@ def run_backtest_on_saved_strategies():
                 metadata = json.load(f)
             
             symbol = metadata.get('symbol')
-            timeframe = metadata.get('timeframe')
+            exchange = metadata.get('exchange', 'binance')
             tp = float(metadata.get('tp', 0.05))
             sl = float(metadata.get('sl', 0.02))
             initial_balance = metadata.get('initial_balance', 1000)
             fee_percent = metadata.get('fee_percent', 0.0005)
             
             # Get signals from database
+            signals_table = f"signals.{strategy_name}"
             with engine.connect() as conn:
-                signals = pd.read_sql_query(f"SELECT * FROM signals.{strategy_name}", conn)
+                signals = pd.read_sql_query(f"SELECT * FROM {signals_table}", conn)
             
-            # Get OHLCV data
-            ohlcv_data = get_ohlcv_data(symbol, timeframe, apply_date_filter=False)
-            ohlcv_backtest = ohlcv_data.reset_index()
-            if 'datetime' not in ohlcv_backtest.columns:
-                ohlcv_backtest = ohlcv_backtest.rename(columns={'index': 'datetime'})
+            # Get OHLCV data based on exchange and symbol
+            ohlcv_table = f"{exchange}_data.{symbol}_1m"
+            with engine.connect() as conn:
+                ohlcv = pd.read_sql_query(f"SELECT * FROM {ohlcv_table}", conn)
             
             # Prepare data
-            ohlcv_backtest['datetime'] = pd.to_datetime(ohlcv_backtest['datetime'])
+            ohlcv['datetime'] = pd.to_datetime(ohlcv['datetime'])
             signals['datetime'] = pd.to_datetime(signals['datetime'])
-            ohlcv_backtest = ohlcv_backtest.sort_values('datetime')
+            ohlcv = ohlcv.sort_values('datetime')
             signals = signals.sort_values('datetime')
             
-            # Create Backtester instance
+            print(f"    → OHLCV data: {len(ohlcv)} rows from {ohlcv['datetime'].min()} to {ohlcv['datetime'].max()}")
+            print(f"    → Signals data: {len(signals)} rows from {signals['datetime'].min()} to {signals['datetime'].max()}")
+            print(f"    → TP: {tp:.4f}, SL: {sl:.4f}")
+            
+            # Create Backtester instance with original parameters
             backtester = Backtester(
-                ohlcv_df=ohlcv_backtest, 
+                ohlcv_df=ohlcv, 
                 signals_df=signals,
                 tp=tp,
                 sl=sl,
