@@ -4,7 +4,6 @@ import configparser
 import random
 import datetime
 import optuna
-import json
 from sqlalchemy import create_engine, MetaData, Table, Column, String, Boolean, DateTime, Integer, Float, text
 from dotenv import load_dotenv
 from collections import Counter
@@ -94,11 +93,12 @@ def load_global_ohlcv_data():
         if not df.empty:
             GLOBAL_OHLCV_DATA[symbol] = df
             print(f"  → Loaded {len(df)} rows for {symbol}")
+            print(f"  → Data range: {df.index.min()} to {df.index.max()}")
         else:
             print(f"  → No data for {symbol}")
 
-def get_ohlcv_data(symbol, timeframe, apply_date_filter=True):
-    """Get consistent OHLCV data for backtesting"""
+def get_ohlcv_data(symbol, timeframe, apply_date_filter=True, warmup_days=30):
+    """Get consistent OHLCV data for backtesting with warmup period for indicators"""
     if symbol not in GLOBAL_OHLCV_DATA:
         raise ValueError(f"No data available for {symbol}")
     
@@ -106,8 +106,18 @@ def get_ohlcv_data(symbol, timeframe, apply_date_filter=True):
     
     # Apply date filter only if requested
     if apply_date_filter:
-        if start_date <= df.index.max() and end_date >= df.index.min():
-            df = df[(df.index >= start_date) & (df.index <= end_date)]
+        print(f"  → Filtering data for {symbol}: {start_date} to {end_date}")
+        print(f"  → Available data range: {df.index.min()} to {df.index.max()}")
+        
+        # Add warmup period before start_date for indicators
+        warmup_start = start_date - datetime.timedelta(days=warmup_days)
+        print(f"  → Including warmup period: {warmup_start} to {end_date}")
+        
+        # Filter data with warmup period
+        df = df[(df.index >= warmup_start) & (df.index <= end_date)]
+        
+        print(f"  → Filtered data range: {df.index.min()} to {df.index.max()}")
+        print(f"  → Filtered data rows: {len(df)}")
     
     # Resample if needed
     if timeframe != '1m':
@@ -203,6 +213,8 @@ def create_strategy_table_with_window_columns():
         Column('exchange', String),
         Column('symbol', String),
         Column('time_horizon', String),
+        Column('take_profit', Float),
+        Column('stop_loss', Float),
     ]
     
     # Add indicator columns with their window size columns next to each other
@@ -233,10 +245,6 @@ class StrategyOptimizer:
         self.enabled_indicators = self._get_enabled_indicators()
         self.best_strategy = None
         
-        # Setup metadata directory
-        self.metadata_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'metadata')
-        os.makedirs(self.metadata_dir, exist_ok=True)
-    
     def _get_enabled_indicators(self):
         """Get enabled indicators from strategy config"""
         return [ind_name for ind_name in indicator_names if self.strategy_config.get(ind_name) is True]
@@ -263,8 +271,8 @@ class StrategyOptimizer:
                 else:
                     indicator_params[ind_name] = 0
         
-        tp = trial.suggest_float('tp', 0.02, 0.15)
-        sl = trial.suggest_float('sl', 0.01, 0.10)
+        tp = trial.suggest_float('tp', 0.04, 0.06)
+        sl = trial.suggest_float('sl', 0.01, 0.03)
         
         return indicator_params, tp, sl
     
@@ -273,6 +281,8 @@ class StrategyOptimizer:
         df = self.ohlcv_data.copy()
         calculator = IndicatorCalculator(df)
         calculated_indicators = []
+        
+        print(f"    → Input data range: {df.index.min()} to {df.index.max()}")
         
         for ind_name, window in indicator_params.items():
             method_name = f"add_{ind_name}"
@@ -297,6 +307,16 @@ class StrategyOptimizer:
         if df_with_indicators.empty:
             return None, None
         
+        print(f"    → After indicators, data range: {df_with_indicators.index.min()} to {df_with_indicators.index.max()}")
+        
+        # Apply date filter AFTER indicator calculation to get signals from start_date
+        df_with_indicators = df_with_indicators[(df_with_indicators.index >= start_date) & (df_with_indicators.index <= end_date)]
+        
+        if df_with_indicators.empty:
+            return None, None
+        
+        print(f"    → After date filtering: {df_with_indicators.index.min()} to {df_with_indicators.index.max()}")
+        
         # Ensure datetime column
         if 'datetime' not in df_with_indicators.columns:
             df_with_indicators = df_with_indicators.reset_index()
@@ -308,6 +328,8 @@ class StrategyOptimizer:
                            indicator_names=[col for col in df_with_indicators.columns 
                                           if any(col.startswith(ind) or col == ind for ind in calculated_indicators)])
         signal_df = sg.generate_signals()
+        
+        print(f"    → Generated signals range: {signal_df['datetime'].min()} to {signal_df['datetime'].max()}")
         
         # Apply voting mechanism
         signal_cols = [col for col in signal_df.columns if col.startswith('signal_')]
@@ -412,7 +434,7 @@ def optimize_all_strategies(base_strategies, pnl_threshold=100):
                     optimizer.best_strategy['sl']
                 )
                 
-                print(f"  → PnL: {verified_pnl:.1f}%, TP: {optimizer.best_strategy['tp']:.4f}, SL: {optimizer.best_strategy['sl']:.4f}")
+                print(f"  → PnL: {verified_pnl:.1f}%, TP: {optimizer.best_strategy['tp']:.2f}, SL: {optimizer.best_strategy['sl']:.2f}")
                 
                 # Only proceed if verified PnL still meets threshold
                 if verified_pnl > pnl_threshold:
@@ -462,6 +484,12 @@ def save_optimized_strategies(optimized_strategies, config_table):
             tp = strategy_data.pop('tp', None)
             sl = strategy_data.pop('sl', None)
             
+            # Add TP and SL to strategy data with 2 decimal places
+            if tp is not None:
+                strategy_data['take_profit'] = round(tp, 2)
+            if sl is not None:
+                strategy_data['stop_loss'] = round(sl, 2)
+            
             # Insert strategy into config_strategies table
             with engine.begin() as conn:
                 conn.execute(config_table.insert().values(**strategy_data))
@@ -487,31 +515,6 @@ def save_optimized_strategies(optimized_strategies, config_table):
             
             with engine.begin() as conn:
                 conn.execute(signals_table.insert(), signals_rows)
-            
-            # Save metadata
-            metadata_file = os.path.join(
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'metadata'),
-                f"{strategy_name}_metadata.json"
-            )
-            
-            strategy_metadata = {
-                'strategy_name': strategy_name,
-                'exchange': strategy['exchange'],
-                'symbol': strategy['symbol'],
-                'timeframe': strategy['time_horizon'],
-                'pnl_sum': pnl_sum,
-                'tp': tp,
-                'sl': sl,
-                'initial_balance': 1000,
-                'fee_percent': 0.0005,
-                'optimized_indicators': {ind: strategy.get(f'{ind}_window_size') 
-                                       for ind in indicator_names 
-                                       if strategy.get(ind) is True},
-                'created_at': datetime.datetime.now().isoformat()
-            }
-            
-            with open(metadata_file, 'w') as f:
-                json.dump(strategy_metadata, f, indent=2, default=str)
             
             print(f"  → Saved {strategy_name}: PnL {pnl_sum:.1f}%")
             saved_count += 1
@@ -540,25 +543,22 @@ def run_backtest_on_saved_strategies():
         try:
             print(f"  → Running backtest for {strategy_name}...")
             
-            # Load metadata to get the exact configuration
-            metadata_file = os.path.join(
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'metadata'),
-                f"{strategy_name}_metadata.json"
-            )
+            # Get strategy configuration from database
+            with engine.connect() as conn:
+                strategy_config = conn.execute(text("""
+                    SELECT * FROM public.config_strategies WHERE name = :strategy_name
+                """), {"strategy_name": strategy_name}).fetchone()
             
-            if not os.path.exists(metadata_file):
-                print(f"    Warning: Metadata not found for {strategy_name}")
+            if not strategy_config:
+                print(f"    Warning: Strategy configuration not found for {strategy_name}")
                 continue
             
-            with open(metadata_file, 'r') as f:
-                metadata = json.load(f)
-            
-            symbol = metadata.get('symbol')
-            exchange = metadata.get('exchange', 'binance')
-            tp = float(metadata.get('tp', 0.05))
-            sl = float(metadata.get('sl', 0.02))
-            initial_balance = metadata.get('initial_balance', 1000)
-            fee_percent = metadata.get('fee_percent', 0.0005)
+            symbol = strategy_config.symbol
+            exchange = strategy_config.exchange
+            tp = float(strategy_config.take_profit)
+            sl = float(strategy_config.stop_loss)
+            initial_balance = 1000
+            fee_percent = 0.0005
             
             # Get signals from database
             signals_table = f"signals.{strategy_name}"
@@ -578,7 +578,7 @@ def run_backtest_on_saved_strategies():
             
             print(f"    → OHLCV data: {len(ohlcv)} rows from {ohlcv['datetime'].min()} to {ohlcv['datetime'].max()}")
             print(f"    → Signals data: {len(signals)} rows from {signals['datetime'].min()} to {signals['datetime'].max()}")
-            print(f"    → TP: {tp:.4f}, SL: {sl:.4f}")
+            print(f"    → TP: {tp:.2f}, SL: {sl:.2f}")
             
             # Create Backtester instance with original parameters
             backtester = Backtester(
@@ -607,11 +607,10 @@ def run_backtest_on_saved_strategies():
                 final_balance = result.iloc[-1]['balance']
                 final_pnl = result.iloc[-1]['pnl_sum']
                 total_trades = len(result[result['action'].isin(['tp', 'sl', 'direction_change'])])
-                optimization_pnl = metadata.get('pnl_sum', 'N/A')
                 
                 print(f"    Final Balance: {final_balance:.2f}")
                 print(f"    Total Trades: {total_trades}")
-                print(f"    Optimization PnL: {optimization_pnl}%, Final PnL: {final_pnl:.1f}%")
+                print(f"    Final PnL: {final_pnl:.1f}%")
                 print(f"    Saved as: strategies_backtest.{backtest_table_name}")
                 
                 backtest_count += 1
