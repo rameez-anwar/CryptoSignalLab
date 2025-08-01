@@ -78,8 +78,8 @@ def load_global_ohlcv_data():
         else:
             print(f"  → No data for {symbol}")
 
-def get_ohlcv_data(symbol, timeframe, apply_date_filter=True):
-    """Get consistent OHLCV data for signal generation"""
+def get_ohlcv_data(symbol, timeframe, apply_date_filter=True, warmup_days=30):
+    """Get consistent OHLCV data for signal generation with warmup period for indicators"""
     if symbol not in GLOBAL_OHLCV_DATA:
         raise ValueError(f"No data available for {symbol}")
     
@@ -87,8 +87,18 @@ def get_ohlcv_data(symbol, timeframe, apply_date_filter=True):
     
     # Apply date filter only if requested
     if apply_date_filter:
-        if start_date <= df.index.max() and end_date >= df.index.min():
-            df = df[(df.index >= start_date) & (df.index <= end_date)]
+        print(f"  → Filtering data for {symbol}: {start_date} to {end_date}")
+        print(f"  → Available data range: {df.index.min()} to {df.index.max()}")
+        
+        # Add warmup period before start_date for indicators
+        warmup_start = start_date - datetime.timedelta(days=warmup_days)
+        print(f"  → Including warmup period: {warmup_start} to {end_date}")
+        
+        # Filter data with warmup period
+        df = df[(df.index >= warmup_start) & (df.index <= end_date)]
+        
+        print(f"  → Filtered data range: {df.index.min()} to {df.index.max()}")
+        print(f"  → Filtered data rows: {len(df)}")
     
     # Resample if needed
     if timeframe != '1m':
@@ -107,6 +117,8 @@ def calculate_indicators_and_signals(df, strategy, indicator_catalog):
     """Calculate indicators and generate signals for a strategy"""
     calculator = IndicatorCalculator(df)
     calculated_indicators = []
+    
+    print(f"    → Input data range: {df.index.min()} to {df.index.max()}")
     
     # Get enabled indicators
     enabled_indicators = []
@@ -148,6 +160,17 @@ def calculate_indicators_and_signals(df, strategy, indicator_catalog):
         print(f"No data after indicator calculation for strategy {strategy['name']}")
         return None
     
+    print(f"    → After indicators, data range: {df_with_indicators.index.min()} to {df_with_indicators.index.max()}")
+    
+    # Apply date filter AFTER indicator calculation to get signals from start_date
+    df_with_indicators = df_with_indicators[(df_with_indicators.index >= start_date) & (df_with_indicators.index <= end_date)]
+    
+    if df_with_indicators.empty:
+        print(f"No data after date filtering for strategy {strategy['name']}")
+        return None
+    
+    print(f"    → After date filtering: {df_with_indicators.index.min()} to {df_with_indicators.index.max()}")
+    
     # Ensure datetime column
     if 'datetime' not in df_with_indicators.columns:
         df_with_indicators = df_with_indicators.reset_index()
@@ -159,6 +182,8 @@ def calculate_indicators_and_signals(df, strategy, indicator_catalog):
                        indicator_names=[col for col in df_with_indicators.columns 
                                       if any(col.startswith(ind) or col == ind for ind in calculated_indicators)])
     signal_df = sg.generate_signals()
+    
+    print(f"    → Generated signals range: {signal_df['datetime'].min()} to {signal_df['datetime'].max()}")
     
     # Apply voting mechanism
     signal_cols = [col for col in signal_df.columns if col.startswith('signal_')]
@@ -210,8 +235,8 @@ for strat in strategies:
     print(f"\n[Signal Generation] {strategy_name}: {enabled_inds}")
     
     try:
-        # Get OHLCV data using the same method as strategies_optimized.py
-        ohlcv_data = get_ohlcv_data(symbol, time_horizon, apply_date_filter=True)  # Use date filtered dataset
+        # Get OHLCV data WITHOUT date filtering to allow for indicator warmup
+        ohlcv_data = get_ohlcv_data(symbol, time_horizon, apply_date_filter=False)
         
         if ohlcv_data is None or ohlcv_data.empty:
             print(f"No data for {symbol} {time_horizon}, skipping {strategy_name}.")
