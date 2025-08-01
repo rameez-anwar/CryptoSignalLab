@@ -1,0 +1,96 @@
+import numpy as np
+import pandas as pd
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error
+import optuna
+from typing import Dict, Any, Tuple
+
+class DecisionTreePricePredictor:
+    def __init__(self):
+        self.model = None
+        self.scaler = MinMaxScaler()
+        
+    def prepare_data(self, data: pd.DataFrame, lookback: int = 60) -> Tuple[np.ndarray, np.ndarray]:
+        """Prepare OHLC data for Decision Tree training"""
+        # Use OHLC features
+        features = data[['open', 'high', 'low', 'close']].values
+        scaled_features = self.scaler.fit_transform(features)
+        
+        X, y = [], []
+        for i in range(lookback, len(scaled_features)):
+            # Flatten the lookback window
+            window = scaled_features[i-lookback:i].flatten()
+            X.append(window)
+            y.append(scaled_features[i, 3])  # Close price
+            
+        return np.array(X), np.array(y)
+    
+    def train_model(self, data: pd.DataFrame, params: Dict[str, Any]) -> float:
+        """Train Decision Tree model and return validation loss"""
+        lookback = params.get('lookback', 60)
+        max_depth = params.get('max_depth', 10)
+        min_samples_split = params.get('min_samples_split', 2)
+        min_samples_leaf = params.get('min_samples_leaf', 1)
+        
+        # Prepare data
+        X, y = self.prepare_data(data, lookback)
+        
+        # Split data (80% train, 20% validation)
+        split_idx = int(0.8 * len(X))
+        X_train, X_val = X[:split_idx], X[split_idx:]
+        y_train, y_val = y[:split_idx], y[split_idx:]
+        
+        # Create and train model
+        self.model = DecisionTreeRegressor(
+            max_depth=max_depth,
+            min_samples_split=min_samples_split,
+            min_samples_leaf=min_samples_leaf,
+            random_state=42
+        )
+        self.model.fit(X_train, y_train)
+        
+        # Calculate validation loss
+        y_pred = self.model.predict(X_val)
+        val_loss = mean_squared_error(y_val, y_pred)
+        
+        return val_loss
+    
+    def predict(self, data: pd.DataFrame, lookback: int = 60) -> np.ndarray:
+        """Generate predictions for the entire dataset"""
+        if self.model is None:
+            raise ValueError("Model not trained. Call train_model first.")
+        
+        features = data[['open', 'high', 'low', 'close']].values
+        scaled_features = self.scaler.transform(features)
+        
+        predictions = []
+        for i in range(lookback, len(scaled_features)):
+            window = scaled_features[i-lookback:i].flatten()
+            pred = self.model.predict([window])[0]
+            predictions.append(pred)
+        
+        # Inverse transform predictions
+        dummy_array = np.zeros((len(predictions), 4))
+        dummy_array[:, 3] = predictions
+        predictions_rescaled = self.scaler.inverse_transform(dummy_array)[:, 3]
+        
+        return predictions_rescaled
+    
+    def get_default_params(self) -> Dict[str, Any]:
+        """Get default parameters for the model"""
+        return {
+            'lookback': 60,
+            'max_depth': 10,
+            'min_samples_split': 2,
+            'min_samples_leaf': 1
+        }
+    
+    def get_param_ranges(self) -> Dict[str, Tuple]:
+        """Get parameter ranges for Optuna optimization"""
+        return {
+            'lookback': (30, 120),
+            'max_depth': (5, 20),
+            'min_samples_split': (2, 10),
+            'min_samples_leaf': (1, 5)
+        } 

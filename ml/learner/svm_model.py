@@ -1,0 +1,98 @@
+import numpy as np
+import pandas as pd
+from sklearn.svm import SVR
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_squared_error
+import optuna
+from typing import Dict, Any, Tuple
+
+class SVMPricePredictor:
+    def __init__(self):
+        self.model = None
+        self.scaler = MinMaxScaler()
+        
+    def prepare_data(self, data: pd.DataFrame, lookback: int = 60) -> Tuple[np.ndarray, np.ndarray]:
+        """Prepare OHLC data for SVM training"""
+        # Use OHLC features
+        features = data[['open', 'high', 'low', 'close']].values
+        scaled_features = self.scaler.fit_transform(features)
+        
+        X, y = [], []
+        for i in range(lookback, len(scaled_features)):
+            # Flatten the lookback window
+            window = scaled_features[i-lookback:i].flatten()
+            X.append(window)
+            y.append(scaled_features[i, 3])  # Close price
+            
+        return np.array(X), np.array(y)
+    
+    def train_model(self, data: pd.DataFrame, params: Dict[str, Any]) -> float:
+        """Train SVM model and return validation loss"""
+        lookback = params.get('lookback', 60)
+        C = params.get('C', 1.0)
+        epsilon = params.get('epsilon', 0.1)
+        gamma = params.get('gamma', 'scale')
+        kernel = params.get('kernel', 'rbf')
+        
+        # Prepare data
+        X, y = self.prepare_data(data, lookback)
+        
+        # Split data (80% train, 20% validation)
+        split_idx = int(0.8 * len(X))
+        X_train, X_val = X[:split_idx], X[split_idx:]
+        y_train, y_val = y[:split_idx], y[split_idx:]
+        
+        # Create and train model (removed random_state parameter)
+        self.model = SVR(
+            C=C,
+            epsilon=epsilon,
+            gamma=gamma,
+            kernel=kernel
+        )
+        
+        self.model.fit(X_train, y_train)
+        
+        # Calculate validation loss
+        y_pred = self.model.predict(X_val)
+        val_loss = mean_squared_error(y_val, y_pred)
+        
+        return val_loss
+    
+    def predict(self, data: pd.DataFrame, lookback: int = 60) -> np.ndarray:
+        """Generate predictions for the entire dataset"""
+        if self.model is None:
+            raise ValueError("Model not trained. Call train_model first.")
+        
+        features = data[['open', 'high', 'low', 'close']].values
+        scaled_features = self.scaler.transform(features)
+        
+        predictions = []
+        for i in range(lookback, len(scaled_features)):
+            window = scaled_features[i-lookback:i].flatten()
+            pred = self.model.predict([window])[0]
+            predictions.append(pred)
+        
+        # Inverse transform predictions
+        dummy_array = np.zeros((len(predictions), 4))
+        dummy_array[:, 3] = predictions
+        predictions_rescaled = self.scaler.inverse_transform(dummy_array)[:, 3]
+        
+        return predictions_rescaled
+    
+    def get_default_params(self) -> Dict[str, Any]:
+        """Get default parameters optimized for speed"""
+        return {
+            'lookback': 60,
+            'C': 1.0,
+            'epsilon': 0.1,
+            'kernel': 'linear'  # Use linear kernel for speed
+        }
+    
+    def get_param_ranges(self) -> Dict[str, Tuple]:
+        """Get parameter ranges optimized for speed and accuracy"""
+        return {
+            'lookback': (30, 90),  # Reduced range
+            'C': (0.1, 10.0),
+            'epsilon': (0.01, 0.5),
+            'kernel': ('linear', 'rbf')  # Only fast kernels
+        } 
