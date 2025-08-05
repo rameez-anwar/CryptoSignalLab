@@ -341,13 +341,22 @@ class StrategySignalGenerator:
         
         return signal
 
-def main():
+def main(strategy_name="strategy_01"):
     """Main function to run signal generator"""
-    # You can change the strategy name here
-    strategy_name = "strategy_02"  # Change this to test different strategies
+    # You can change the strategy name here or pass it as parameter
+    # strategy_name = "strategy_02"  # Change this to test different strategies
     
     generator = StrategySignalGenerator()
-    generator.generate_latest_signal(strategy_name)
+    signal = generator.generate_latest_signal(strategy_name)
+    
+    if signal is not None:
+        print(f"\n✅ Signal generation completed for {strategy_name}")
+        return signal
+    else:
+        print(f"\n❌ Signal generation failed for {strategy_name}")
+        return None
 
 if __name__ == "__main__":
-    main()
+    # You can change the strategy name here
+    strategy_name = "strategy_01"  # Change this to test different strategies
+    main(strategy_name)
