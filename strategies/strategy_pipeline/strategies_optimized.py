@@ -66,6 +66,65 @@ with engine.connect() as conn:
 # Global OHLCV data cache to ensure consistency
 GLOBAL_OHLCV_DATA = {}
 
+def get_next_strategy_number():
+    """Get the next available strategy number by checking existing strategies in the database"""
+    print("Checking existing strategies in database...")
+    
+    try:
+        with engine.connect() as conn:
+            # Check if config_strategies table exists
+            table_exists = conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'config_strategies' AND table_schema = 'public'
+                );
+            """)).scalar()
+            
+            if not table_exists:
+                print("  → No existing strategies table found, starting from strategy_01")
+                return 1
+            
+            # Get all existing strategy names
+            result = conn.execute(text("""
+                SELECT name FROM public.config_strategies 
+                WHERE name LIKE 'strategy_%' 
+                ORDER BY name
+            """)).fetchall()
+            
+            if not result:
+                print("  → No existing strategies found, starting from strategy_01")
+                return 1
+            
+            # Extract strategy numbers and find the highest
+            strategy_numbers = []
+            for row in result:
+                strategy_name = row[0]
+                # Extract number from strategy_XX format
+                if strategy_name.startswith('strategy_'):
+                    try:
+                        number_str = strategy_name.replace('strategy_', '')
+                        number = int(number_str)
+                        strategy_numbers.append(number)
+                    except ValueError:
+                        continue
+            
+            if not strategy_numbers:
+                print("  → No valid strategy numbers found, starting from strategy_01")
+                return 1
+            
+            max_number = max(strategy_numbers)
+            next_number = max_number + 1
+            print(f"  → Found {len(strategy_numbers)} existing strategies")
+            print(f"  → Highest strategy number: {max_number}")
+            print(f"  → Next strategy number: {next_number}")
+            
+            return next_number
+            
+    except Exception as e:
+        print(f"  → Error checking existing strategies: {e}")
+        print("  → Starting from strategy_01")
+        return 1
+
 def load_global_ohlcv_data():
     """Load OHLCV data once and cache it globally for consistency"""
     global GLOBAL_OHLCV_DATA
@@ -184,10 +243,13 @@ def generate_base_strategies():
     """Generate base strategies in memory (not saved to DB yet)"""
     print("Generating base strategies in memory...")
     
+    # Get the next strategy number to start from
+    next_strategy_number = get_next_strategy_number()
+    
     strategies = []
-    global_strat_num = 1
+    global_strat_num = next_strategy_number
     total_strategies = len(exchanges) * len(symbols) * len(timeframes) * max_files
-    width = max(2, len(str(total_strategies)))
+    width = max(2, len(str(total_strategies + next_strategy_number - 1)))
     
     for exchange in exchanges:
         for symbol in symbols:
@@ -205,7 +267,7 @@ def generate_base_strategies():
                     strategies.append(strategy)
                     global_strat_num += 1
     
-    print(f"Generated {len(strategies)} base strategies in memory")
+    print(f"Generated {len(strategies)} base strategies starting from strategy_{str(next_strategy_number).zfill(width)}")
     return strategies
 
 def create_strategy_table_with_window_columns():
@@ -229,11 +291,13 @@ def create_strategy_table_with_window_columns():
     
     config_table = Table('config_strategies', metadata, *config_columns, schema='public')
     
-    # Create or recreate table
+    # Create table if it doesn't exist (don't drop existing table)
     with engine.connect() as conn:
-        if engine.dialect.has_table(conn, 'config_strategies', schema='public'):
-            conn.execute(text("DROP TABLE public.config_strategies"))
-        metadata.create_all(engine, tables=[config_table])
+        if not engine.dialect.has_table(conn, 'config_strategies', schema='public'):
+            metadata.create_all(engine, tables=[config_table])
+            print("  → Created new config_strategies table")
+        else:
+            print("  → Using existing config_strategies table")
     
     return config_table
 
@@ -530,45 +594,26 @@ def save_optimized_strategies(optimized_strategies, config_table):
     
     print(f"Successfully saved {saved_count} optimized strategies")
 
-def run_backtest_on_saved_strategies():
-    """Execute backtest using the original Backtester class with proper database schema handling"""
-    print("Running backtests on saved strategies...")
-    
-    with engine.connect() as conn:
-        signal_tables = conn.execute(text("""
-            SELECT table_name FROM information_schema.tables 
-            WHERE table_schema = 'signals' AND table_name LIKE 'strategy_%'
-            ORDER BY table_name
-        """)).fetchall()
+def run_backtest_on_new_strategies(optimized_strategies):
+    """Execute backtest only on newly created strategies"""
+    print("Running backtests on newly created strategies...")
     
     backtest_count = 0
     
-    for table_row in signal_tables:
-        strategy_name = table_row[0]
+    for strategy in optimized_strategies:
+        strategy_name = strategy['name']
         try:
             print(f"  → Running backtest for {strategy_name}...")
             
-            # Get strategy configuration from database
-            with engine.connect() as conn:
-                strategy_config = conn.execute(text("""
-                    SELECT * FROM public.config_strategies WHERE name = :strategy_name
-                """), {"strategy_name": strategy_name}).fetchone()
-            
-            if not strategy_config:
-                print(f"    Warning: Strategy configuration not found for {strategy_name}")
-                continue
-            
-            symbol = strategy_config.symbol
-            exchange = strategy_config.exchange
-            tp = float(strategy_config.take_profit)
-            sl = float(strategy_config.stop_loss)
+            symbol = strategy['symbol']
+            exchange = strategy['exchange']
+            tp = strategy['tp']
+            sl = strategy['sl']
             initial_balance = 1000
             fee_percent = 0.0005
             
-            # Get signals from database
-            signals_table = f"signals.{strategy_name}"
-            with engine.connect() as conn:
-                signals = pd.read_sql_query(f"SELECT * FROM {signals_table}", conn)
+            # Get signals from the signals_df that was already calculated
+            signals_df = strategy['signals_df']
             
             # Get OHLCV data based on exchange and symbol
             ohlcv_table = f"{exchange}_data.{symbol}_1m"
@@ -577,18 +622,18 @@ def run_backtest_on_saved_strategies():
             
             # Prepare data
             ohlcv['datetime'] = pd.to_datetime(ohlcv['datetime'])
-            signals['datetime'] = pd.to_datetime(signals['datetime'])
+            signals_df['datetime'] = pd.to_datetime(signals_df['datetime'])
             ohlcv = ohlcv.sort_values('datetime')
-            signals = signals.sort_values('datetime')
+            signals_df = signals_df.sort_values('datetime')
             
             print(f"    → OHLCV data: {len(ohlcv)} rows from {ohlcv['datetime'].min()} to {ohlcv['datetime'].max()}")
-            print(f"    → Signals data: {len(signals)} rows from {signals['datetime'].min()} to {signals['datetime'].max()}")
+            print(f"    → Signals data: {len(signals_df)} rows from {signals_df['datetime'].min()} to {signals_df['datetime'].max()}")
             print(f"    → TP: {tp:.2f}, SL: {sl:.2f}")
             
             # Create Backtester instance with original parameters
             backtester = Backtester(
                 ohlcv_df=ohlcv, 
-                signals_df=signals,
+                signals_df=signals_df,
                 tp=tp,
                 sl=sl,
                 initial_balance=initial_balance,
@@ -660,10 +705,10 @@ def main(pnl_threshold=100):
     # Step 1: Load global OHLCV data
     load_global_ohlcv_data()
     
-    # Step 2: Generate base strategies
+    # Step 2: Generate base strategies (will continue from next available number)
     base_strategies = generate_base_strategies()
     
-    # Step 3: Create strategy table
+    # Step 3: Create strategy table (won't drop existing table)
     config_table = create_strategy_table_with_window_columns()
     
     # Step 4: Optimize strategies
@@ -672,11 +717,11 @@ def main(pnl_threshold=100):
     # Step 5: Save optimized strategies
     if optimized_strategies:
         save_optimized_strategies(optimized_strategies, config_table)
+        
+        # Step 6: Run backtests only on newly created strategies
+        run_backtest_on_new_strategies(optimized_strategies)
     else:
         print("No strategies met the PnL threshold")
-    
-    # Step 6: Run final backtests
-    run_backtest_on_saved_strategies()
     
     print("\nPipeline completed successfully")
 
