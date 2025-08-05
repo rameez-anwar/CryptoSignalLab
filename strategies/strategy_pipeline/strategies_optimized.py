@@ -40,6 +40,10 @@ end_date_str = data.get('end_date', 'now')
 start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
 end_date = datetime.datetime.now() if end_date_str == "now" else datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
 
+# Get the primary exchange and symbol for data loading
+primary_exchange = exchanges[0] if exchanges else 'bybit'
+primary_symbol = symbols[0] if symbols else 'btc'
+
 # Get indicator configurations
 indicator_catalog = get_all_indicator_configs()
 
@@ -69,21 +73,22 @@ def load_global_ohlcv_data():
     
     for symbol in symbols:
         ohlcv_table = f"{symbol}_1m"
+        schema_name = f"{primary_exchange}_data"
         
         with engine.connect() as conn:
             table_exists = conn.execute(text("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
-                    WHERE table_name = :table_name AND table_schema = 'binance_data'
+                    WHERE table_name = :table_name AND table_schema = :schema_name
                 );
-            """), {"table_name": ohlcv_table}).scalar()
+            """), {"table_name": ohlcv_table, "schema_name": schema_name}).scalar()
             
             if not table_exists:
-                print(f"Warning: Table binance_data.{ohlcv_table} does not exist")
+                print(f"Warning: Table {schema_name}.{ohlcv_table} does not exist")
                 continue
             
             # Load ALL available data without date filtering
-            df = pd.read_sql_query(f"SELECT * FROM binance_data.{ohlcv_table} ORDER BY datetime", conn)
+            df = pd.read_sql_query(f"SELECT * FROM {schema_name}.{ohlcv_table} ORDER BY datetime", conn)
         
         # Process data consistently
         df['datetime'] = pd.to_datetime(df['datetime'])
@@ -632,7 +637,7 @@ def download_latest_data():
     for symbol in symbols:
         try:
             print(f"  → Downloading latest data for {symbol}...")
-            downloader = DataDownloader(exchange='binance', symbol=symbol, time_horizon='1m')
+            downloader = DataDownloader(exchange=primary_exchange, symbol=symbol, time_horizon='1m')
             df_1min, df_horizon = downloader.fetch_data(auto_download=True)
             
             if df_1min is not None and not df_1min.empty:

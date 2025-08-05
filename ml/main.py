@@ -61,14 +61,11 @@ def run_backtest(data: pd.DataFrame, signals: np.ndarray, initial_capital: float
     ohlcv_df = data[['open', 'high', 'low', 'close', 'volume']].copy()
     ohlcv_df.index.name = 'datetime'
     
-    # Use the existing Backtester with specified tp and sl
+    # Use the existing Backtester with default parameters
     backtester = Backtester(
         ohlcv_df=ohlcv_df,
         signals_df=signals_df,
-        tp=0.05,  # 5% take profit
-        sl=0.03,  # 3% stop loss
-        initial_balance=initial_capital,
-        fee_percent=0.001  # 0.1% commission
+        initial_balance=initial_capital
     )
     
     # Run backtest
@@ -124,14 +121,11 @@ def save_ledger_to_csv(data: pd.DataFrame, signals: np.ndarray, model_name: str,
     ohlcv_df = data[['open', 'high', 'low', 'close', 'volume']].copy()
     ohlcv_df.index.name = 'datetime'
     
-    # Use the existing Backtester
+    # Use the existing Backtester with default parameters
     backtester = Backtester(
         ohlcv_df=ohlcv_df,
         signals_df=signals_df,
-        tp=0.02,  # 2% take profit
-        sl=0.02,  # 2% stop loss
-        initial_balance=1000,
-        fee_percent=0.001
+        initial_balance=1000
     )
     
     # Run backtest
@@ -155,7 +149,7 @@ def save_ledger_to_csv(data: pd.DataFrame, signals: np.ndarray, model_name: str,
     return ledger_path
 
 def optimize_model(base_learner: BaseLearner, data: pd.DataFrame, model_name: str, 
-                  initial_capital: float, commission: float, config: Dict[str, Any], n_trials: int = 100) -> Dict[str, Any]:
+                  initial_capital: float, config: Dict[str, Any], n_trials: int = 100) -> Dict[str, Any]:
     """Optimize a single model using Optuna"""
     print(f"Starting optimization for {model_name}...")
     
@@ -221,22 +215,22 @@ def optimize_model(base_learner: BaseLearner, data: pd.DataFrame, model_name: st
             ''', (trial.number, json.dumps(params), pnl, datetime.now().isoformat()))
             conn.commit()
             
-            # Return negative PnL for minimization (we want to maximize PnL)
-            return -pnl
+            # Return PnL for maximization
+            return pnl
             
         except Exception as e:
             print(f"Error in trial {trial.number}: {str(e)}")
-            return float('inf')
+            return float('-inf')
     
-    # Create study for minimization (we minimize negative PnL to maximize positive PnL)
-    study = optuna.create_study(direction='minimize')
+    # Create study for maximization
+    study = optuna.create_study(direction='maximize')
     
     # Optimize with fewer trials for speed
     study.optimize(objective, n_trials=n_trials)
     
     # Get best parameters and results
     best_params = study.best_params
-    best_value = -study.best_value  # Convert back to positive PnL
+    best_value = study.best_value  # Already positive PnL
     
     # Generate signals with best parameters for verification
     try:
@@ -314,10 +308,22 @@ def main():
                 end_time = pd.to_datetime(data_config['end_date'])
             
             # Fetch data using existing DataDownloader
-            data = data_downloader.fetch_data(start_time=start_time, end_time=end_time)
+            data_tuple = data_downloader.fetch_data(start_time=start_time, end_time=end_time)
+            
+            if data_tuple is None or len(data_tuple) != 2:
+                raise ValueError("No data retrieved from DataDownloader")
+            
+            # DataDownloader returns (df_1min, df_horizon) - we want the time horizon data
+            df_1min, data = data_tuple
             
             if data is None or len(data) == 0:
-                raise ValueError("No data retrieved from DataDownloader")
+                raise ValueError("No time horizon data available")
+            
+            # Ensure data starts from the specified start date
+            if hasattr(data.index, 'min') and callable(getattr(data.index, 'min', None)):
+                if data.index.min() < start_time:
+                    data = data[data.index >= start_time]
+                    print(f"Filtered data to start from {start_time}")
             
             # Limit data size for faster processing (keep last 1000 points for live-like performance)
             if len(data) > 1000:
@@ -325,51 +331,25 @@ def main():
                 print(f"Limited data to last 1000 points for faster processing")
             
             print(f"Data loaded successfully: {len(data)} data points")
-            print(f"Date range: {data.index.min()} to {data.index.max()}")
+            
+            # Safely print date range
+            try:
+                if hasattr(data.index, 'min') and callable(getattr(data.index, 'min', None)):
+                    print(f"Date range: {data.index.min()} to {data.index.max()}")
+                else:
+                    print(f"Data index type: {type(data.index)}")
+                    if len(data) > 0:
+                        print(f"First row: {data.iloc[0] if hasattr(data, 'iloc') else 'Unknown'}")
+                        print(f"Last row: {data.iloc[-1] if hasattr(data, 'iloc') else 'Unknown'}")
+            except Exception as e:
+                print(f"Could not determine date range: {e}")
+                print(f"Data shape: {data.shape}")
+                print(f"Data columns: {data.columns.tolist() if hasattr(data, 'columns') else 'Unknown'}")
             
         except Exception as e:
             print(f"Error loading data: {str(e)}")
-            print("Creating sample data for testing...")
-            # Create sample data for testing
-            start_dt = pd.to_datetime(data_config['start_date'])
-            end_dt = pd.Timestamp.now() if data_config['end_date'].lower() == 'now' else pd.to_datetime(data_config['end_date'])
-            
-            # Generate sample data (limited to 1000 points for speed)
-            timestamps = pd.date_range(start=start_dt, end=end_dt, freq='4H')
-            if len(timestamps) > 1000:
-                timestamps = timestamps[-1000:]
-            
-            np.random.seed(42)
-            
-            base_price = 50000 if 'btc' in data_config['symbol'].lower() else 1000
-            returns = np.random.normal(0, 0.02, len(timestamps))
-            prices = [base_price]
-            
-            for ret in returns[1:]:
-                new_price = prices[-1] * (1 + ret)
-                prices.append(new_price)
-            
-            data = []
-            for i, (ts, price) in enumerate(zip(timestamps, prices)):
-                volatility = 0.01
-                open_price = price * (1 + np.random.normal(0, volatility/2))
-                high_price = max(open_price, price) * (1 + abs(np.random.normal(0, volatility/4)))
-                low_price = min(open_price, price) * (1 - abs(np.random.normal(0, volatility/4)))
-                close_price = price
-                
-                data.append({
-                    'timestamp': ts,
-                    'open': open_price,
-                    'high': high_price,
-                    'low': low_price,
-                    'close': close_price,
-                    'volume': np.random.randint(1000, 10000)
-                })
-            
-            data = pd.DataFrame(data)
-            data['timestamp'] = pd.to_datetime(data['timestamp'])
-            data = data.set_index('timestamp')
-            print(f"Created sample data: {len(data)} data points")
+            print("Failed to load data from Bybit. Please check your configuration and internet connection.")
+            raise
         
         # Train models with default parameters first
         print("\n=== Training Models with Default Parameters ===")
@@ -413,7 +393,6 @@ def main():
                     data=data,
                     model_name=model_name,
                     initial_capital=backtest_config['initial_capital'],
-                    commission=backtest_config['commission'],
                     config=config,
                     n_trials=optimization_config['n_trials']
                 )

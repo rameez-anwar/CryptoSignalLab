@@ -3,3 +3,4 @@
 *.whl
 *.env
 *.json
+*.log

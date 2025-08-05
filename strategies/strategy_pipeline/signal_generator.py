@@ -1,280 +1,353 @@
 import os
 import pandas as pd
-from sqlalchemy import create_engine, text, MetaData, Table, Column, String, DateTime, Integer
+import datetime
+import configparser
+from sqlalchemy import text
 from dotenv import load_dotenv
-from collections import Counter
+from data.utils.db_utils import get_pg_engine
+from data.downloaders.DataDownloader import DataDownloader
 from indicators.technical_indicator import IndicatorCalculator
 from signals.technical_indicator_signal.signal_generator import SignalGenerator
 from strategies.strategy_pipeline.utils.indicator_utils import get_all_indicator_configs
-from data.utils.db_utils import get_pg_engine
-import configparser
-import datetime
 
-# --- Load DB credentials from .env ---
+# Load environment variables
 load_dotenv()
-engine = get_pg_engine()
 
-# --- Load strategy config for date range ---
-config_path = os.path.join(os.path.dirname(__file__), 'strategy_config.ini')
-config = configparser.ConfigParser()
-config.read(config_path)
-data = config['DATA']
-start_date_str = data.get('start_date', '2020-01-01')
-end_date_str = data.get('end_date', 'now')
-
-start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
-end_date = datetime.datetime.now() if end_date_str == "now" else datetime.datetime.strptime(end_date_str, "%Y-%m-%d")
-
-# --- Create signals schema if not exists ---
-metadata = MetaData()
-with engine.connect() as conn:
-    conn.execute(text("CREATE SCHEMA IF NOT EXISTS signals;"))
-
-# --- Helper: check if signals table already exists for a strategy ---
-def signals_table_exists(strategy_name):
-    with engine.connect() as conn:
-        return engine.dialect.has_table(conn, strategy_name, schema='signals')
-
-# --- Load all indicator configs ---
-indicator_catalog = get_all_indicator_configs()
-
-# Global OHLCV data cache to ensure consistency
-GLOBAL_OHLCV_DATA = {}
-
-def load_global_ohlcv_data():
-    """Load OHLCV data once and cache it globally for consistency"""
-    global GLOBAL_OHLCV_DATA
-    print("Loading global OHLCV data...")
-    
-    # Get symbols from config
-    symbols = [s.strip() for s in data.get('symbols', '').split(',')]
-    
-    for symbol in symbols:
-        ohlcv_table = f"{symbol}_1m"
+class StrategySignalGenerator:
+    def __init__(self):
+        self.engine = get_pg_engine()
+        self.indicator_catalog = get_all_indicator_configs()
         
-        with engine.connect() as conn:
-            table_exists = conn.execute(text("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_name = :table_name AND table_schema = 'binance_data'
-                );
-            """), {"table_name": ohlcv_table}).scalar()
+    def get_strategy_config(self, strategy_name):
+        """Get strategy configuration from database"""
+        try:
+            query = text("SELECT * FROM public.config_strategies WHERE name = :strategy_name")
+            strategy_df = pd.read_sql_query(query, self.engine, params={'strategy_name': strategy_name})
             
-            if not table_exists:
-                print(f"Warning: Table binance_data.{ohlcv_table} does not exist")
-                continue
+            if strategy_df.empty:
+                raise ValueError(f"Strategy '{strategy_name}' not found in database")
             
-            # Load ALL available data without date filtering
-            df = pd.read_sql_query(f"SELECT * FROM binance_data.{ohlcv_table} ORDER BY datetime", conn)
+            return strategy_df.iloc[0].to_dict()
+        except Exception as e:
+            print(f"Error getting strategy config: {e}")
+            return None
+    
+    def get_highest_window_size(self, strategy_config):
+        """Get the highest window size from enabled indicators"""
+        max_window = 0
+        enabled_indicators = []
         
-        # Process data consistently
-        df['datetime'] = pd.to_datetime(df['datetime'])
-        df = df.set_index('datetime').sort_index()
+        for col in strategy_config.keys():
+            if col.endswith('_window_size') and strategy_config[col] > 0:
+                window_size = strategy_config[col]
+                indicator_name = col.replace('_window_size', '')
+                if strategy_config.get(indicator_name, False):  # Check if indicator is enabled
+                    max_window = max(max_window, window_size)
+                    enabled_indicators.append((indicator_name, window_size))
         
-        # Store the COMPLETE dataset - no date filtering here
-        if not df.empty:
-            GLOBAL_OHLCV_DATA[symbol] = df
-            print(f"  → Loaded {len(df)} rows for {symbol}")
+        return max_window, enabled_indicators
+    
+    def get_latest_data(self, exchange, symbol, time_horizon, required_window_size):
+        """Get latest data with enough history for window size"""
+        try:
+            # Calculate how much data we need (window_size + some buffer)
+            required_minutes = required_window_size * self._parse_time_horizon_minutes(time_horizon) + 100
+            
+            # Get current time
+            now = datetime.datetime.now()
+            start_time = now - datetime.timedelta(minutes=required_minutes)
+            
+            # Download data
+            downloader = DataDownloader(exchange=exchange, symbol=symbol, time_horizon=time_horizon)
+            df_1min, df_horizon = downloader.fetch_data(start_time=start_time, end_time=now)
+            
+            if df_horizon.empty:
+                raise ValueError(f"No data available for {exchange} {symbol} {time_horizon}")
+            
+            return df_horizon
+            
+        except Exception as e:
+            print(f"Error getting latest data: {e}")
+            return None
+    
+    def _parse_time_horizon_minutes(self, time_horizon):
+        """Parse time horizon string to minutes"""
+        time_horizon = time_horizon.lower()
+        
+        if 'h' in time_horizon:
+            hours = int(time_horizon.replace('h', ''))
+            return hours * 60
+        elif 'm' in time_horizon:
+            return int(time_horizon.replace('m', ''))
+        elif 'd' in time_horizon:
+            days = int(time_horizon.replace('d', ''))
+            return days * 24 * 60
         else:
-            print(f"  → No data for {symbol}")
-
-def get_ohlcv_data(symbol, timeframe, apply_date_filter=True, warmup_days=30):
-    """Get consistent OHLCV data for signal generation with warmup period for indicators"""
-    if symbol not in GLOBAL_OHLCV_DATA:
-        raise ValueError(f"No data available for {symbol}")
-    
-    df = GLOBAL_OHLCV_DATA[symbol].copy()
-    
-    # Apply date filter only if requested
-    if apply_date_filter:
-        print(f"  → Filtering data for {symbol}: {start_date} to {end_date}")
-        print(f"  → Available data range: {df.index.min()} to {df.index.max()}")
-        
-        # Add warmup period before start_date for indicators
-        warmup_start = start_date - datetime.timedelta(days=warmup_days)
-        print(f"  → Including warmup period: {warmup_start} to {end_date}")
-        
-        # Filter data with warmup period
-        df = df[(df.index >= warmup_start) & (df.index <= end_date)]
-        
-        print(f"  → Filtered data range: {df.index.min()} to {df.index.max()}")
-        print(f"  → Filtered data rows: {len(df)}")
-    
-    # Resample if needed
-    if timeframe != '1m':
-        resampling_dict = {
-            'open': 'first',
-            'high': 'max', 
-            'low': 'min',
-            'close': 'last',
-            'volume': 'sum'
-        }
-        df = df.resample(timeframe).agg(resampling_dict).dropna()
-    
-    return df
-
-def calculate_indicators_and_signals(df, strategy, indicator_catalog):
-    """Calculate indicators and generate signals for a strategy"""
-    calculator = IndicatorCalculator(df)
-    calculated_indicators = []
-    
-    print(f"    → Input data range: {df.index.min()} to {df.index.max()}")
-    
-    # Get enabled indicators
-    enabled_indicators = []
-    for ind_name in indicator_catalog.keys():
-        if strategy.get(ind_name) is True:
-            enabled_indicators.append(ind_name)
-    
-    if not enabled_indicators:
-        print(f"No enabled indicators found for strategy {strategy['name']}")
-        return None
-    
-    # Calculate indicators with their window sizes
-    for ind_name in enabled_indicators:
-        method_name = f"add_{ind_name}"
-        if hasattr(calculator, method_name):
             try:
-                window_size = strategy.get(f'{ind_name}_window_size', 0)
-                if window_size != 0:
-                    getattr(calculator, method_name)(window_size)
-                    print(f"  → {ind_name}: window_size={window_size}")
-                else:
-                    getattr(calculator, method_name)()
-                    print(f"  → {ind_name}: default window")
-                calculated_indicators.append(ind_name)
-            except Exception as e:
-                print(f"Error calculating {ind_name}: {e}")
-                continue
+                return int(time_horizon)
+            except ValueError:
+                return 60  # Default to 1 hour
     
-    if not calculated_indicators:
-        print(f"No indicators could be calculated for strategy {strategy['name']}")
-        return None
+    def calculate_indicators(self, df, strategy_config):
+        """Calculate indicators based on strategy configuration"""
+        try:
+            # Ensure dataframe has datetime column
+            if 'datetime' not in df.columns:
+                df = df.reset_index()
+                if 'index' in df.columns and 'datetime' not in df.columns:
+                    df = df.rename(columns={'index': 'datetime'})
+            
+            # Initialize calculator with dataframe
+            calculator = IndicatorCalculator(df)
+            calculated_indicators = []
+            
+            print(f"   Available indicators in strategy config:")
+            enabled_indicators = []
+            for col in strategy_config.keys():
+                if col.endswith('_window_size') and strategy_config[col] > 0:
+                    indicator_name = col.replace('_window_size', '')
+                    if strategy_config.get(indicator_name, False):  # Check if indicator is enabled
+                        enabled_indicators.append(indicator_name)
+            
+            print(f"   Enabled indicators: {enabled_indicators}")
+            
+            for col in strategy_config.keys():
+                if col.endswith('_window_size') and strategy_config[col] > 0:
+                    indicator_name = col.replace('_window_size', '')
+                    if strategy_config.get(indicator_name, False):  # Check if indicator is enabled
+                        window_size = strategy_config[col]
+                        
+                        # Get the method name for the indicator
+                        method_name = f"add_{indicator_name}"
+                        if hasattr(calculator, method_name):
+                            try:
+                                if window_size != 0:
+                                    getattr(calculator, method_name)(window_size)
+                                else:
+                                    getattr(calculator, method_name)()
+                                calculated_indicators.append(indicator_name)
+                                print(f"   ✓ Calculated {indicator_name} with window {window_size}")
+                            except Exception as e:
+                                print(f"   ✗ Could not calculate {indicator_name}: {e}")
+                                continue
+                        else:
+                            print(f"   ✗ Method {method_name} not found for {indicator_name}")
+            
+            # Ensure the final dataframe has the required columns
+            df_with_indicators = calculator.df
+            if 'datetime' not in df_with_indicators.columns:
+                df_with_indicators = df_with_indicators.reset_index()
+                if 'index' in df_with_indicators.columns and 'datetime' not in df_with_indicators.columns:
+                    df_with_indicators = df_with_indicators.rename(columns={'index': 'datetime'})
+            
+            print(f"   Final dataframe columns: {list(df_with_indicators.columns)}")
+            return df_with_indicators, calculated_indicators
+            
+        except Exception as e:
+            print(f"Error calculating indicators: {e}")
+            return df, []
     
-    df_with_indicators = calculator.df
-    indicator_columns = [col for col in df_with_indicators.columns 
-                       if any(col.startswith(ind) or col == ind for ind in calculated_indicators)]
-    df_with_indicators = df_with_indicators.dropna(subset=indicator_columns)
+    def generate_signal(self, df_with_indicators, calculated_indicators):
+        """Generate trading signal based on indicator data with improved logic"""
+        try:
+            # Create signal generator with the dataframe and indicator names
+            signal_generator = SignalGenerator(df_with_indicators, calculated_indicators)
+            signals_df = signal_generator.generate_signals()
+            
+            if signals_df.empty:
+                print("   No signals generated - empty dataframe")
+                return 0  # No signal
+            
+            # Get the latest signal by combining all indicator signals
+            signal_columns = [col for col in signals_df.columns if col.startswith('signal_')]
+            if not signal_columns:
+                print("   No signal columns found")
+                return 0
+            
+            # Get the latest row
+            latest_row = signals_df.iloc[-1]
+            
+            # Combine signals with improved logic
+            latest_signals = [latest_row[col] for col in signal_columns]
+            
+            # Count signals with weights
+            long_signals = sum(1 for s in latest_signals if s == 1)
+            short_signals = sum(1 for s in latest_signals if s == -1)
+            neutral_signals = sum(1 for s in latest_signals if s == 0)
+            
+            print(f"   Signal breakdown: LONG={long_signals}, SHORT={short_signals}, NEUTRAL={neutral_signals}")
+            
+            # Improved decision logic
+            total_signals = len(latest_signals)
+            if total_signals == 0:
+                print("   No valid signals found")
+                return 0
+            
+            # Calculate signal strength
+            long_strength = long_signals / total_signals
+            short_strength = short_signals / total_signals
+            
+            print(f"   Signal strength: LONG={long_strength:.2f}, SHORT={short_strength:.2f}")
+            
+            # Decision logic with minimum threshold
+            min_threshold = 0.3  # At least 30% of signals must agree
+            
+            if long_strength > min_threshold and long_strength > short_strength:
+                print(f"   Decision: LONG (strength: {long_strength:.2f})")
+                return 1  # Long
+            elif short_strength > min_threshold and short_strength > long_strength:
+                print(f"   Decision: SHORT (strength: {short_strength:.2f})")
+                return -1  # Short
+            else:
+                print(f"   Decision: NEUTRAL (no clear signal)")
+                return 0  # Neutral
+            
+        except Exception as e:
+            print(f"Error generating signal: {e}")
+            return 0
     
-    if df_with_indicators.empty:
-        print(f"No data after indicator calculation for strategy {strategy['name']}")
-        return None
-    
-    print(f"    → After indicators, data range: {df_with_indicators.index.min()} to {df_with_indicators.index.max()}")
-    
-    # Apply date filter AFTER indicator calculation to get signals from start_date
-    df_with_indicators = df_with_indicators[(df_with_indicators.index >= start_date) & (df_with_indicators.index <= end_date)]
-    
-    if df_with_indicators.empty:
-        print(f"No data after date filtering for strategy {strategy['name']}")
-        return None
-    
-    print(f"    → After date filtering: {df_with_indicators.index.min()} to {df_with_indicators.index.max()}")
-    
-    # Ensure datetime column
-    if 'datetime' not in df_with_indicators.columns:
-        df_with_indicators = df_with_indicators.reset_index()
-        if 'index' in df_with_indicators.columns:
-            df_with_indicators = df_with_indicators.rename(columns={'index': 'datetime'})
-    
-    # Generate signals
-    sg = SignalGenerator(df_with_indicators, 
-                       indicator_names=[col for col in df_with_indicators.columns 
-                                      if any(col.startswith(ind) or col == ind for ind in calculated_indicators)])
-    signal_df = sg.generate_signals()
-    
-    print(f"    → Generated signals range: {signal_df['datetime'].min()} to {signal_df['datetime'].max()}")
-    
-    # Apply voting mechanism
-    signal_cols = [col for col in signal_df.columns if col.startswith('signal_')]
-    voted_signals = []
-    
-    for i, row in signal_df.iterrows():
-        votes = [row[col] for col in signal_cols]
-        count = Counter(votes)
-        most_common = count.most_common()
-        if len(most_common) > 1 and most_common[0][1] == most_common[1][1]:
-            voted_signals.append(0)
-        else:
-            voted_signals.append(most_common[0][0])
-    
-    signals_df = pd.DataFrame({
-        'datetime': signal_df['datetime'],
-        'signal': voted_signals
-    })
-    
-    return signals_df
-
-# --- Load global data first ---
-load_global_ohlcv_data()
-
-# --- Fetch all strategies from DB ---
-with engine.connect() as conn:
-    strategies = conn.execute(text("SELECT * FROM public.config_strategies")).fetchall()
-    columns = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name = 'config_strategies' AND table_schema = 'public' ORDER BY ordinal_position")).fetchall()
-    col_names = [col[0] for col in columns]
-
-for strat in strategies:
-    strat_dict = dict(zip(col_names, strat))
-    strategy_name = strat_dict['name']
-    exchange = strat_dict['exchange']
-    symbol = strat_dict['symbol']
-    time_horizon = strat_dict['time_horizon']
-    
-    # Only process if signals table does not already exist for this strategy
-    if signals_table_exists(strategy_name):
-        print(f"Signals table already exists for {strategy_name}, skipping.")
-        continue
-    
-    # Get enabled indicators for this strategy
-    enabled_inds = [ind for ind in indicator_catalog if strat_dict.get(ind) is True]
-    if not enabled_inds:
-        print(f"No enabled indicators for {strategy_name}, skipping.")
-        continue
-    
-    print(f"\n[Signal Generation] {strategy_name}: {enabled_inds}")
-    
-    try:
-        # Get OHLCV data WITHOUT date filtering to allow for indicator warmup
-        ohlcv_data = get_ohlcv_data(symbol, time_horizon, apply_date_filter=False)
+    def should_generate_signal(self, time_horizon, last_signal_time=None):
+        """Check if enough time has passed to generate a new signal"""
+        if last_signal_time is None:
+            return True
         
-        if ohlcv_data is None or ohlcv_data.empty:
-            print(f"No data for {symbol} {time_horizon}, skipping {strategy_name}.")
-            continue
+        horizon_minutes = self._parse_time_horizon_minutes(time_horizon)
+        time_since_last = datetime.datetime.now() - last_signal_time
+        minutes_since_last = time_since_last.total_seconds() / 60
         
-        # Calculate indicators and generate signals
-        signals_df = calculate_indicators_and_signals(ohlcv_data, strat_dict, indicator_catalog)
+        return minutes_since_last >= horizon_minutes
+    
+    def get_latest_signal_from_db(self, strategy_name):
+        """Get the latest signal from database for a strategy"""
+        try:
+            query = text(f"SELECT datetime, signal FROM signals.{strategy_name} ORDER BY datetime DESC LIMIT 1")
+            result = pd.read_sql_query(query, self.engine)
+            
+            if result.empty:
+                return None, None
+            
+            latest_time = pd.to_datetime(result.iloc[0]['datetime'])
+            latest_signal = result.iloc[0]['signal']
+            
+            return latest_time, latest_signal
+            
+        except Exception as e:
+            print(f"Error getting latest signal from DB: {e}")
+            return None, None
+    
+    def generate_latest_signal(self, strategy_name):
+        """Main method to generate the latest signal for a strategy"""
+        print(f"🔍 Generating signal for strategy: {strategy_name}")
+        print("=" * 60)
         
-        if signals_df is None or signals_df.empty:
-            print(f"No signals generated for {strategy_name}, skipping.")
-            continue
+        # Get strategy configuration
+        strategy_config = self.get_strategy_config(strategy_name)
+        if strategy_config is None:
+            print("❌ Failed to get strategy configuration")
+            return None
         
-        # Create a table for this strategy in the signals schema
-        strat_signals_table = Table(
-            strategy_name, metadata,
-            Column('datetime', DateTime),
-            Column('signal', Integer),
-            schema='signals'
+        print(f"📊 Strategy Configuration:")
+        print(f"   Exchange: {strategy_config['exchange']}")
+        print(f"   Symbol: {strategy_config['symbol']}")
+        print(f"   Time Horizon: {strategy_config['time_horizon']}")
+        print(f"   Take Profit: {strategy_config['take_profit']:.2%}")
+        print(f"   Stop Loss: {strategy_config['stop_loss']:.2%}")
+        
+        # Get highest window size
+        max_window, enabled_indicators = self.get_highest_window_size(strategy_config)
+        print(f"   Max Window Size: {max_window}")
+        print(f"   Enabled Indicators: {len(enabled_indicators)}")
+        
+        # Check if we should generate a new signal
+        last_signal_time, last_signal = self.get_latest_signal_from_db(strategy_name)
+        
+        if last_signal_time is not None:
+            print(f"   Last Signal Time: {last_signal_time}")
+            print(f"   Last Signal: {'LONG' if last_signal == 1 else 'SHORT' if last_signal == -1 else 'NEUTRAL'}")
+            
+            if not self.should_generate_signal(strategy_config['time_horizon'], last_signal_time):
+                horizon_minutes = self._parse_time_horizon_minutes(strategy_config['time_horizon'])
+                time_since_last = datetime.datetime.now() - last_signal_time
+                minutes_since_last = time_since_last.total_seconds() / 60
+                remaining_minutes = horizon_minutes - minutes_since_last
+                
+                print(f"\n⏰ Signal not ready yet!")
+                print(f"   Time since last signal: {minutes_since_last:.1f} minutes")
+                print(f"   Time horizon: {horizon_minutes} minutes")
+                print(f"   Remaining time: {remaining_minutes:.1f} minutes")
+                print(f"   Next signal in: {remaining_minutes/60:.1f} hours")
+                return last_signal  # Return the last signal instead of None
+        
+        print(f"\n📈 Getting latest market data...")
+        
+        # Get latest data
+        df = self.get_latest_data(
+            strategy_config['exchange'],
+            strategy_config['symbol'],
+            strategy_config['time_horizon'],
+            max_window
         )
         
-        with engine.connect() as conn:
-            if not engine.dialect.has_table(conn, strategy_name, schema='signals'):
-                metadata.create_all(engine, tables=[strat_signals_table])
+        if df is None:
+            print("❌ Failed to get market data")
+            return None
         
-        # Save signals to the strategy-specific table
-        signals_rows = [
-            {'datetime': row.datetime, 'signal': row.signal}
-            for row in signals_df.itertuples(index=False, name='SignalRow')
-        ]
+        print(f"   Data points: {len(df)}")
+        print(f"   Date range: {df.index[0]} to {df.index[-1]}")
         
-        with engine.begin() as conn:
-            conn.execute(strat_signals_table.insert(), signals_rows)
+        # Calculate indicators
+        print(f"\n🔧 Calculating indicators...")
+        df_with_indicators, calculated_indicators = self.calculate_indicators(df, strategy_config)
+        print(f"   Calculated {len(calculated_indicators)} indicators: {calculated_indicators}")
         
-        print(f"Inserted {len(signals_rows)} signals for {strategy_name} (table signals.{strategy_name}).")
-        print(f"Signal range: {signals_df['datetime'].min()} to {signals_df['datetime'].max()}")
+        # Generate signal
+        print(f"\n🎯 Generating signal...")
+        signal = self.generate_signal(df_with_indicators, calculated_indicators)
         
-    except Exception as e:
-        print(f"Error processing {strategy_name}: {e}")
-        continue
+        # Display result
+        print(f"\n" + "=" * 60)
+        print(f"📊 SIGNAL RESULT")
+        print(f"=" * 60)
+        
+        if signal == 1:
+            print(f"🟢 LONG SIGNAL")
+            print(f"   Action: BUY {strategy_config['symbol'].upper()}")
+            print(f"   Take Profit: +{strategy_config['take_profit']:.2%}")
+            print(f"   Stop Loss: -{strategy_config['stop_loss']:.2%}")
+        elif signal == -1:
+            print(f"🔴 SHORT SIGNAL")
+            print(f"   Action: SELL {strategy_config['symbol'].upper()}")
+            print(f"   Take Profit: +{strategy_config['take_profit']:.2%}")
+            print(f"   Stop Loss: -{strategy_config['stop_loss']:.2%}")
+        else:
+            # Determine what position to hold based on last signal
+            if last_signal == 1:
+                print(f"🟡 HOLD SIGNAL (LONG)")
+                print(f"   Action: HOLD LONG {strategy_config['symbol'].upper()}")
+                print(f"   Take Profit: +{strategy_config['take_profit']:.2%}")
+                print(f"   Stop Loss: -{strategy_config['stop_loss']:.2%}")
+            elif last_signal == -1:
+                print(f"🟡 HOLD SIGNAL (SHORT)")
+                print(f"   Action: HOLD SHORT {strategy_config['symbol'].upper()}")
+                print(f"   Take Profit: +{strategy_config['take_profit']:.2%}")
+                print(f"   Stop Loss: -{strategy_config['stop_loss']:.2%}")
+            else:
+                print(f"🟡 NEUTRAL SIGNAL")
+                print(f"   Action: NO POSITION")
+        
+        print(f"\n⏰ Generated at: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"📅 Next signal in: {strategy_config['time_horizon']}")
+        print("=" * 60)
+        
+        return signal
 
-print("\nSignal generation complete for all strategies.")
+def main():
+    """Main function to run signal generator"""
+    # You can change the strategy name here
+    strategy_name = "strategy_02"  # Change this to test different strategies
+    
+    generator = StrategySignalGenerator()
+    generator.generate_latest_signal(strategy_name)
+
+if __name__ == "__main__":
+    main()
