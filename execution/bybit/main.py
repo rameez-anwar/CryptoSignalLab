@@ -59,7 +59,7 @@ class BybitTrader:
     def _create_ledger_table(self):
         """Create ledger table for the strategy in database"""
         try:
-            # Create ledger table schema
+            # Create ledger table schema - simplified to match expected format
             ledger_table = Table(
                 f'ledger_{self.strategy_name}', 
                 self.metadata,
@@ -71,12 +71,6 @@ class BybitTrader:
                 Column('balance', Float),
                 Column('pnl', Float),
                 Column('pnl_sum', Float),
-                # New fields for Bybit execution data
-                Column('filled_qty', Float),
-                Column('filled_value', Float),
-                Column('execution_fee', Float),
-                Column('order_id', String),
-                Column('execution_id', String),
                 schema='execution'
             )
             
@@ -248,10 +242,69 @@ class BybitTrader:
                 return int(qty)
             return round(qty, 3)  # Fallback
 
+    def _get_actual_trading_fee_from_history(self, order_id, symbol):
+        """Get actual trading fee from Bybit trade history"""
+        try:
+            self._sync_time()
+            
+            # Get trade history for the specific order
+            trade_history = self.client.get_trade_history(
+                category="linear",
+                symbol=symbol,
+                orderId=order_id,
+                limit=10
+            )
+            
+            logger.info(f"Trade history response: {trade_history}")
+            
+            if trade_history['retCode'] == 0 and trade_history['result']['list']:
+                total_fee = 0.0
+                for trade in trade_history['result']['list']:
+                    if trade.get('orderId') == order_id:
+                        fee = float(trade.get('execFee', 0))
+                        total_fee += fee
+                        logger.info(f"Found trade fee: {fee} USDT for order {order_id}")
+                
+                logger.info(f"Total trading fee for order {order_id}: {total_fee} USDT")
+                return total_fee
+            else:
+                logger.warning(f"No trade history found for order {order_id}")
+                return 0.0
+                
+        except Exception as e:
+            logger.error(f"Error getting trading fee from history: {e}")
+            return 0.0
+
+    def _calculate_balance_after_fee(self, filled_price, filled_value, trading_fee):
+        """Calculate balance after subtracting trading fee"""
+        try:
+            # Convert fee to percentage of position value
+            if filled_value > 0:
+                fee_percentage = (trading_fee / filled_value) * 100
+            else:
+                fee_percentage = 0
+            
+            # Calculate actual balance after fee
+            actual_balance = filled_value - trading_fee
+            
+            logger.info(f"Filled value: {filled_value} USDT")
+            logger.info(f"Trading fee: {trading_fee} USDT")
+            logger.info(f"Fee percentage: {fee_percentage:.4f}%")
+            logger.info(f"Actual balance after fee: {actual_balance} USDT")
+            
+            return actual_balance, fee_percentage
+            
+        except Exception as e:
+            logger.error(f"Error calculating balance after fee: {e}")
+            return filled_value, 0.0
+
     def _get_order_execution_details(self, order_id, symbol):
         """Get actual execution details from Bybit order"""
         try:
             self._sync_time()
+            
+            # Wait a bit for order to be processed
+            time.sleep(2)
             
             # Get order details
             order_response = self.client.get_order_history(
@@ -259,6 +312,8 @@ class BybitTrader:
                 symbol=symbol,
                 orderId=order_id
             )
+            
+            logger.info(f"Order response: {order_response}")
             
             if order_response['retCode'] == 0 and order_response['result']['list']:
                 order = order_response['result']['list'][0]
@@ -269,6 +324,8 @@ class BybitTrader:
                     symbol=symbol,
                     orderId=order_id
                 )
+                
+                logger.info(f"Execution response: {execution_response}")
                 
                 if execution_response['retCode'] == 0 and execution_response['result']['list']:
                     execution = execution_response['result']['list'][0]
@@ -291,6 +348,31 @@ class BybitTrader:
                     }
                     
                     logger.info(f"Execution details: {execution_details}")
+                    return execution_details
+                else:
+                    # Fallback: use order details if execution not available
+                    logger.warning(f"Execution details not available, using order details")
+                    current_price = self._get_current_price(symbol)
+                    taker_fee, _ = self._get_trading_fees(symbol)
+                    
+                    execution_details = {
+                        'order_id': order_id,
+                        'symbol': symbol,
+                        'side': order.get('side', ''),
+                        'filled_price': current_price if current_price else float(order.get('avgPrice', 0)),
+                        'filled_qty': float(order.get('cumExecQty', 0)),
+                        'filled_value': float(order.get('cumExecValue', 0)),
+                        'execution_fee': float(order.get('cumExecValue', 0)) * taker_fee if float(order.get('cumExecValue', 0)) > 0 else 0,
+                        'execution_time': order.get('updatedTime', ''),
+                        'execution_id': order_id,
+                        'order_status': order.get('orderStatus', ''),
+                        'order_type': order.get('orderType', ''),
+                        'time_in_force': order.get('timeInForce', ''),
+                        'take_profit': float(order.get('takeProfit', 0)),
+                        'stop_loss': float(order.get('stopLoss', 0))
+                    }
+                    
+                    logger.info(f"Fallback execution details: {execution_details}")
                     return execution_details
             
             logger.warning(f"Could not get execution details for order {order_id}")
@@ -373,23 +455,25 @@ class BybitTrader:
             execution_details = self._get_order_execution_details(order_id, symbol)
             
             if execution_details:
-                # Get actual balance from Bybit
-                total_balance, available_balance = self._get_account_balance_from_bybit()
+                # Get actual trading fee from Bybit history
+                actual_trading_fee = self._get_actual_trading_fee_from_history(order_id, symbol)
                 
-                if total_balance is not None:
-                    self.current_balance = total_balance
+                # Use actual fee if available, otherwise use execution fee
+                trading_fee = actual_trading_fee if actual_trading_fee > 0 else execution_details['execution_fee']
                 
-                # Calculate actual PnL (entry fee as negative)
-                entry_fee = execution_details['execution_fee']
+                # Calculate balance after fee
                 filled_value = execution_details['filled_value']
+                actual_balance, fee_percentage = self._calculate_balance_after_fee(
+                    execution_details['filled_price'], 
+                    filled_value, 
+                    trading_fee
+                )
                 
-                # Calculate fee as percentage of position value
-                if filled_value > 0:
-                    fee_percentage = (entry_fee / filled_value) * 100
-                else:
-                    fee_percentage = 0
+                # Update current balance
+                self.current_balance = actual_balance
                 
-                actual_pnl = -fee_percentage  # Negative because it's a cost
+                # Calculate PnL (negative fee as percentage)
+                actual_pnl = -fee_percentage
                 
                 # Update cumulative PnL
                 self.cumulative_pnl += actual_pnl
@@ -401,14 +485,9 @@ class BybitTrader:
                     'action': 'buy',  # Opening position
                     'buy_price': execution_details['filled_price'],  # Actual filled price
                     'sell_price': 0.0,  # Will be filled when position closes
-                    'balance': total_balance if total_balance else self.current_balance,
-                    'pnl': actual_pnl,
-                    'pnl_sum': self.cumulative_pnl,
-                    'filled_qty': execution_details['filled_qty'],
-                    'filled_value': execution_details['filled_value'],
-                    'execution_fee': execution_details['execution_fee'],
-                    'order_id': execution_details['order_id'],
-                    'execution_id': execution_details['execution_id']
+                    'balance': actual_balance,
+                    'pnl': round(actual_pnl, 2),
+                    'pnl_sum': round(self.cumulative_pnl, 2)
                 }
                 
                 self._update_ledger(trade_data)
@@ -416,9 +495,10 @@ class BybitTrader:
                 logger.info(f"Ledger updated with Bybit data:")
                 logger.info(f"  Filled price: {execution_details['filled_price']}")
                 logger.info(f"  Filled qty: {execution_details['filled_qty']}")
-                logger.info(f"  Filled value: {execution_details['filled_value']}")
-                logger.info(f"  Execution fee: {execution_details['execution_fee']}")
-                logger.info(f"  Balance: {total_balance}")
+                logger.info(f"  Filled value: {filled_value}")
+                logger.info(f"  Actual trading fee: {trading_fee}")
+                logger.info(f"  Fee percentage: {fee_percentage:.4f}%")
+                logger.info(f"  Actual balance: {actual_balance}")
                 logger.info(f"  PnL: {actual_pnl:.2f}%")
                 
                 return True
@@ -455,6 +535,7 @@ class BybitTrader:
             # Use default Bybit fees
             default_taker = 0.0006  # 0.06%
             default_maker = 0.0001  # 0.01%
+            logger.info(f"Using fallback fees for {symbol}: Taker={default_taker*100:.4f}%, Maker={default_maker*100:.4f}%")
             return default_taker, default_maker
     
     def _get_current_price(self, symbol):
@@ -592,14 +673,11 @@ class BybitTrader:
                 execution_details = self._get_order_execution_details(order_id, symbol)
                 
                 if execution_details:
-                    # Get actual balance from Bybit
-                    total_balance, available_balance = self._get_account_balance_from_bybit()
+                    # Get actual trading fee from Bybit history
+                    actual_trading_fee = self._get_actual_trading_fee_from_history(order_id, symbol)
                     
-                    if total_balance is not None:
-                        self.current_balance = total_balance
-                    
-                    # Calculate actual PnL from execution
-                    exit_fee = execution_details['execution_fee']
+                    # Use actual fee if available, otherwise use execution fee
+                    exit_fee = actual_trading_fee if actual_trading_fee > 0 else execution_details['execution_fee']
                     exit_price = execution_details['filled_price']
                     
                     # Get the original entry data from active positions
@@ -624,6 +702,12 @@ class BybitTrader:
                         # Total PnL including fees
                         total_pnl = price_pnl - fee_percentage
                         
+                        # Calculate actual balance after exit fee
+                        actual_balance, _ = self._calculate_balance_after_fee(exit_price, filled_value, exit_fee)
+                        
+                        # Update current balance
+                        self.current_balance = actual_balance
+                        
                         # Update cumulative PnL
                         self.cumulative_pnl += total_pnl
                         
@@ -634,14 +718,9 @@ class BybitTrader:
                             'action': 'sell',  # Closing position
                             'buy_price': entry_price,  # Original entry price
                             'sell_price': exit_price,  # Actual exit price
-                            'balance': total_balance if total_balance else self.current_balance,
-                            'pnl': total_pnl,
-                            'pnl_sum': self.cumulative_pnl,
-                            'filled_qty': execution_details['filled_qty'],
-                            'filled_value': execution_details['filled_value'],
-                            'execution_fee': execution_details['execution_fee'],
-                            'order_id': execution_details['order_id'],
-                            'execution_id': execution_details['execution_id']
+                            'balance': actual_balance,
+                            'pnl': round(total_pnl, 2),
+                            'pnl_sum': round(self.cumulative_pnl, 2)
                         }
                         
                         self._update_ledger(trade_data)
@@ -651,8 +730,9 @@ class BybitTrader:
                         logger.info(f"  Exit price: {exit_price}")
                         logger.info(f"  Price PnL: {price_pnl:.2f}%")
                         logger.info(f"  Exit fee: {exit_fee}")
+                        logger.info(f"  Fee percentage: {fee_percentage:.4f}%")
                         logger.info(f"  Total PnL: {total_pnl:.2f}%")
-                        logger.info(f"  Balance: {total_balance}")
+                        logger.info(f"  Actual balance: {actual_balance}")
                         
                         # Remove from active positions
                         del self.active_positions[symbol]
@@ -726,7 +806,7 @@ class BybitTrader:
     def _update_ledger(self, trade_data):
         """Update ledger with trade data"""
         try:
-            # Prepare data with all fields
+            # Prepare data with simplified format
             ledger_data = {
                 'datetime': trade_data['datetime'],
                 'predicted_direction': trade_data['predicted_direction'],
@@ -735,22 +815,14 @@ class BybitTrader:
                 'sell_price': trade_data['sell_price'],
                 'balance': trade_data['balance'],
                 'pnl': trade_data['pnl'],
-                'pnl_sum': trade_data['pnl_sum'],
-                # New Bybit execution fields (optional)
-                'filled_qty': trade_data.get('filled_qty', 0.0),
-                'filled_value': trade_data.get('filled_value', 0.0),
-                'execution_fee': trade_data.get('execution_fee', 0.0),
-                'order_id': trade_data.get('order_id', ''),
-                'execution_id': trade_data.get('execution_id', '')
+                'pnl_sum': trade_data['pnl_sum']
             }
             
             # Insert into database
             query = text(f"""
                 INSERT INTO execution.ledger_{self.strategy_name} 
-                (datetime, predicted_direction, action, buy_price, sell_price, balance, pnl, pnl_sum, 
-                 filled_qty, filled_value, execution_fee, order_id, execution_id)
-                VALUES (:datetime, :predicted_direction, :action, :buy_price, :sell_price, :balance, :pnl, :pnl_sum,
-                        :filled_qty, :filled_value, :execution_fee, :order_id, :execution_id)
+                (datetime, predicted_direction, action, buy_price, sell_price, balance, pnl, pnl_sum)
+                VALUES (:datetime, :predicted_direction, :action, :buy_price, :sell_price, :balance, :pnl, :pnl_sum)
             """)
             
             with self.engine.connect() as conn:
@@ -1018,11 +1090,11 @@ class BybitTrader:
                     'datetime': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'predicted_direction': signal,
                     'action': 'same direction',
-                    'buy_price': position['entry_price'],  # Original entry price
-                    'sell_price': 0.0,  # No sell yet
-                    'balance': round(self.current_balance, 2),
-                    'pnl': 0.0,  # No PnL change
-                    'pnl_sum': self.cumulative_pnl
+                    'buy_price': current_price,
+                    'sell_price': 0.0,
+                    'balance': round(self._get_account_balance(), 2),
+                    'pnl': 0.0,
+                    'pnl_sum': round(self.cumulative_pnl, 2)
                 }
                 
                 self._update_ledger(trade_data)
@@ -1079,10 +1151,37 @@ class BybitTrader:
         return
     
     def should_generate_signal(self):
-        """Check if it's time to generate signal (every 4 hours)"""
-        current_time = datetime.datetime.now()
-        # Generate signal every 4 hours (0, 4, 8, 12, 16, 20)
-        return current_time.hour % 4 == 0 and current_time.minute == 0
+        """Check if it's time to generate signal based on strategy time horizon"""
+        try:
+            # Get strategy configuration to determine time horizon
+            strategy_config = self.get_strategy_config()
+            if strategy_config is None:
+                logger.warning("Could not get strategy config, using default 1 hour")
+                time_horizon = "1h"
+            else:
+                time_horizon = strategy_config.get('time_horizon', '1h')
+            
+            current_time = datetime.datetime.now()
+            
+            # Convert time horizon to hours
+            if time_horizon == "1h":
+                # Generate signal every hour
+                return current_time.minute == 0
+            elif time_horizon == "4h":
+                # Generate signal every 4 hours
+                return current_time.hour % 4 == 0 and current_time.minute == 0
+            elif time_horizon == "1d":
+                # Generate signal every day at midnight
+                return current_time.hour == 0 and current_time.minute == 0
+            else:
+                # Default to 1 hour
+                logger.warning(f"Unknown time horizon: {time_horizon}, using 1 hour")
+                return current_time.minute == 0
+                
+        except Exception as e:
+            logger.error(f"Error checking signal generation time: {e}")
+            # Fallback to every hour
+            return datetime.datetime.now().minute == 0
 
     def get_strategy_config(self):
         """Get strategy configuration from database"""
@@ -1140,6 +1239,7 @@ class BybitTrader:
             sl_percent = strategy_config.get('stop_loss', 0.03)    # Stop loss percentage
             position_size_usdt = strategy_config.get('position_size', 1000)  # Position size in USDT
             leverage = strategy_config.get('leverage', 1)           # Leverage
+            time_horizon = strategy_config.get('time_horizon', '1h')  # Time horizon
             # ============================================
             
             logger.info("=== Starting Bybit Trading Bot with Database Ledger ===")
@@ -1147,7 +1247,8 @@ class BybitTrader:
             logger.info(f"Trading parameters: {symbol}, TP: {tp_percent*100}%, SL: {sl_percent*100}%")
             logger.info(f"Position size: ${position_size_usdt} USDT (contract value)")
             logger.info(f"Leverage: {leverage}x")
-            logger.info("Signal generation: Every 4 hours (0:00, 4:00, 8:00, 12:00, 16:00, 20:00)")
+            logger.info(f"Time horizon: {time_horizon}")
+            logger.info(f"Signal generation: Every {time_horizon}")
             logger.info(f"Starting balance: ${self.initial_balance:.2f} USDT")
             logger.info(f"Current balance: ${self.current_balance:.2f} USDT")
             logger.info(f"Current PnL: {self.cumulative_pnl:.2f}%")
@@ -1199,7 +1300,7 @@ class BybitTrader:
                                         'sell_price': 0.0,
                                         'balance': round(self._get_account_balance(), 2),
                                         'pnl': 0.0,
-                                        'pnl_sum': self.cumulative_pnl
+                                        'pnl_sum': round(self.cumulative_pnl, 2)
                                     }
                                     self._update_ledger(trade_data)
                                 else:
@@ -1364,7 +1465,7 @@ def export_strategy_ledger(strategy_name, filename=None):
         return None
 
 
-def main(strategy_name="strategy_09"):
+def main(strategy_name="strategy_07"):
     """Main function to start the trading bot"""
     try:
         # Initialize trader with strategy name

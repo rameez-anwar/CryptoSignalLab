@@ -341,7 +341,7 @@ class StrategySignalGenerator:
         
         return signal
 
-def main(strategy_name="strategy_01"):
+def main(strategy_name="strategy_07"):
     """Main function to run signal generator"""
     # You can change the strategy name here or pass it as parameter
     # strategy_name = "strategy_02"  # Change this to test different strategies
@@ -358,5 +358,5 @@ def main(strategy_name="strategy_01"):
 
 if __name__ == "__main__":
     # You can change the strategy name here
-    strategy_name = "strategy_01"  # Change this to test different strategies
+    strategy_name = "strategy_07"  # Change this to test different strategies
     main(strategy_name)
