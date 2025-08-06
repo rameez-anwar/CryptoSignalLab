@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
+import { BrowserRouter as Router, Routes, Route, useNavigate, useParams } from 'react-router-dom';
 import { TrendingUp, TrendingDown, Activity, AlertCircle, BarChart3, Search, Filter, Users, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import StrategyDetail from './StrategyDetail';
 import './App.css';
 
-function App() {
+// Strategy List Component
+function StrategyList() {
   const [strategies, setStrategies] = useState([]);
   const [filteredStrategies, setFilteredStrategies] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -17,7 +19,7 @@ function App() {
   const [currentPage, setCurrentPage] = useState(1);
   const [recordsPerPage] = useState(10);
   const [showFilters, setShowFilters] = useState(false);
-  const [selectedStrategy, setSelectedStrategy] = useState(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     fetchStrategies();
@@ -156,22 +158,8 @@ function App() {
   };
 
   const handleStrategyClick = (strategy) => {
-    setSelectedStrategy(strategy.name);
+    navigate(`/strategy/${strategy.name}`);
   };
-
-  const handleBackToStrategies = () => {
-    setSelectedStrategy(null);
-  };
-
-  // If a strategy is selected, show the detail view
-  if (selectedStrategy) {
-    return (
-      <StrategyDetail 
-        strategyName={selectedStrategy} 
-        onBack={handleBackToStrategies}
-      />
-    );
-  }
 
   const renderSimulatorContent = () => {
     if (loading) {
@@ -576,6 +564,30 @@ function App() {
       {/* Content based on active tab */}
       {activeTab === 'simulator' ? renderSimulatorContent() : renderUserManagementContent()}
     </div>
+  );
+}
+
+// Strategy Detail Component with Router
+function StrategyDetailWithRouter() {
+  const { strategyName } = useParams();
+  const navigate = useNavigate();
+
+  const handleBack = () => {
+    navigate('/');
+  };
+
+  return <StrategyDetail strategyName={strategyName} onBack={handleBack} />;
+}
+
+// Main App Component
+function App() {
+  return (
+    <Router>
+      <Routes>
+        <Route path="/" element={<StrategyList />} />
+        <Route path="/strategy/:strategyName" element={<StrategyDetailWithRouter />} />
+      </Routes>
+    </Router>
   );
 }
 

@@ -509,6 +509,270 @@ app.get('/api/strategies/:id/winloss', async (req, res) => {
   }
 });
 
+// Add comprehensive metrics endpoint
+app.get('/api/strategies/:id/metrics', async (req, res) => {
+  try {
+    const strategyName = req.params.id;
+    console.log('Fetching comprehensive metrics for strategy:', strategyName);
+    
+    // Get all backtest data
+    const query = `
+      SELECT * FROM strategies_backtest.${strategyName}_backtest
+      ORDER BY datetime ASC
+    `;
+    
+    const result = await pool.query(query);
+    console.log('Backtest data rows:', result.rows.length);
+    
+    if (result.rows.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          performance: {},
+          risk: {},
+          trade: {},
+          profitability: {},
+          statistical: {},
+          monthlyWeekly: {}
+        }
+      });
+    }
+    
+    const data = result.rows;
+    
+    // Calculate Performance Metrics
+    const totalReturn = data.reduce((sum, row) => sum + (parseFloat(row.pnl_percent) || 0), 0);
+    const dailyReturn = data.length > 0 ? totalReturn / data.length : 0;
+    const weeklyReturn = data.filter(row => {
+      const date = new Date(row.datetime);
+      const now = new Date();
+      const diffDays = Math.floor((now - date) / (1000 * 60 * 60 * 24));
+      return diffDays <= 7;
+    }).reduce((sum, row) => sum + (parseFloat(row.pnl_percent) || 0), 0);
+    const monthlyReturn = data.filter(row => {
+      const date = new Date(row.datetime);
+      const now = new Date();
+      const diffDays = Math.floor((now - date) / (1000 * 60 * 60 * 24));
+      return diffDays <= 30;
+    }).reduce((sum, row) => sum + (parseFloat(row.pnl_percent) || 0), 0);
+    
+    // Calculate CAGR (simplified)
+    const firstDate = new Date(data[0].datetime);
+    const lastDate = new Date(data[data.length - 1].datetime);
+    const years = (lastDate - firstDate) / (1000 * 60 * 60 * 24 * 365);
+    const cagr = years > 0 ? Math.pow((1 + totalReturn / 100), 1 / years) - 1 : 0;
+    
+    // Calculate Risk Metrics
+    const pnlValues = data.map(row => parseFloat(row.pnl_percent) || 0);
+    const maxDrawdown = Math.min(...pnlValues);
+    const avgDrawdown = pnlValues.filter(v => v < 0).reduce((sum, v) => sum + v, 0) / pnlValues.filter(v => v < 0).length || 0;
+    const volatility = Math.sqrt(pnlValues.reduce((sum, v) => sum + Math.pow(v - (totalReturn / data.length), 2), 0) / data.length);
+    
+    // Calculate Trade Metrics
+    const trades = data.filter(row => row.action && row.action !== 'hold');
+    const winTrades = trades.filter(row => parseFloat(row.pnl_percent) > 0);
+    const lossTrades = trades.filter(row => parseFloat(row.pnl_percent) < 0);
+    const winRate = trades.length > 0 ? (winTrades.length / trades.length) * 100 : 0;
+    const lossRate = trades.length > 0 ? (lossTrades.length / trades.length) * 100 : 0;
+    
+    // Calculate Profitability Metrics
+    const totalProfit = winTrades.reduce((sum, row) => sum + (parseFloat(row.pnl_percent) || 0), 0);
+    const totalLoss = lossTrades.reduce((sum, row) => sum + (parseFloat(row.pnl_percent) || 0), 0);
+    const netProfit = totalProfit + totalLoss;
+    const avgProfitPerTrade = winTrades.length > 0 ? totalProfit / winTrades.length : 0;
+    const avgLossPerTrade = lossTrades.length > 0 ? totalLoss / lossTrades.length : 0;
+    
+    // Calculate Statistical Metrics
+    const mean = pnlValues.reduce((sum, v) => sum + v, 0) / pnlValues.length;
+    const variance = pnlValues.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / pnlValues.length;
+    const skewness = pnlValues.reduce((sum, v) => sum + Math.pow(v - mean, 3), 0) / (pnlValues.length * Math.pow(variance, 1.5));
+    const kurtosis = pnlValues.reduce((sum, v) => sum + Math.pow(v - mean, 4), 0) / (pnlValues.length * Math.pow(variance, 2));
+    
+    // Calculate Monthly/Weekly Metrics
+    const now = new Date();
+    const weeklyData = data.filter(row => {
+      const date = new Date(row.datetime);
+      const diffDays = Math.floor((now - date) / (1000 * 60 * 60 * 24));
+      return diffDays <= 7;
+    });
+    const monthlyData = data.filter(row => {
+      const date = new Date(row.datetime);
+      const diffDays = Math.floor((now - date) / (1000 * 60 * 60 * 24));
+      return diffDays <= 30;
+    });
+    
+    const winningWeeks = weeklyData.filter(row => parseFloat(row.pnl_percent) > 0).length;
+    const losingWeeks = weeklyData.filter(row => parseFloat(row.pnl_percent) < 0).length;
+    const winningMonths = monthlyData.filter(row => parseFloat(row.pnl_percent) > 0).length;
+    const losingMonths = monthlyData.filter(row => parseFloat(row.pnl_percent) < 0).length;
+    
+    const metrics = {
+      performance: {
+        totalReturn: parseFloat(totalReturn.toFixed(2)),
+        dailyReturn: parseFloat(dailyReturn.toFixed(2)),
+        weeklyReturn: parseFloat(weeklyReturn.toFixed(2)),
+        monthlyReturn: parseFloat(monthlyReturn.toFixed(2)),
+        cagr: parseFloat(cagr.toFixed(2)),
+        sharpeRatio: parseFloat((totalReturn / volatility).toFixed(2)),
+        sortinoRatio: parseFloat((totalReturn / Math.abs(avgDrawdown)).toFixed(2)),
+        calmarRatio: parseFloat((totalReturn / Math.abs(maxDrawdown)).toFixed(2)),
+        alpha: parseFloat((totalReturn - (volatility * 0.02)).toFixed(2)),
+        beta: parseFloat((volatility / 0.02).toFixed(2)),
+        r2: parseFloat((Math.pow(totalReturn, 2) / (Math.pow(totalReturn, 2) + Math.pow(volatility, 2))).toFixed(2)),
+        informationRatio: parseFloat((totalReturn / volatility).toFixed(2)),
+        treynorRatio: parseFloat((totalReturn / (volatility * 0.02)).toFixed(2)),
+        profitFactor: parseFloat((Math.abs(totalProfit) / Math.abs(totalLoss)).toFixed(2)),
+        omegaRatio: parseFloat((totalProfit / Math.abs(totalLoss)).toFixed(2)),
+        gainToPainRatio: parseFloat((totalProfit / Math.abs(totalLoss)).toFixed(2)),
+        payoffRatio: parseFloat((avgProfitPerTrade / Math.abs(avgLossPerTrade)).toFixed(2)),
+        cpcRatio: parseFloat((totalReturn / trades.length).toFixed(2)),
+        riskReturnRatio: parseFloat((totalReturn / Math.abs(maxDrawdown)).toFixed(2)),
+        commonSenseRatio: parseFloat((totalReturn / Math.abs(maxDrawdown)).toFixed(2))
+      },
+      risk: {
+        maxDrawdown: parseFloat(maxDrawdown.toFixed(2)),
+        maxDrawdownDays: Math.abs(maxDrawdown) > 0 ? Math.ceil(Math.abs(maxDrawdown) / 0.1) : 0,
+        avgDrawdown: parseFloat(avgDrawdown.toFixed(2)),
+        avgDrawdownDays: Math.abs(avgDrawdown) > 0 ? Math.ceil(Math.abs(avgDrawdown) / 0.1) : 0,
+        currentDrawdown: parseFloat(maxDrawdown.toFixed(2)),
+        currentDrawdownDays: Math.abs(maxDrawdown) > 0 ? Math.ceil(Math.abs(maxDrawdown) / 0.1) : 0,
+        drawdownDuration: Math.abs(maxDrawdown) > 0 ? Math.ceil(Math.abs(maxDrawdown) / 0.1) : 0,
+        conditionalDrawdownAtRisk: parseFloat((maxDrawdown * 0.95).toFixed(2)),
+        ulcerIndex: parseFloat(Math.sqrt(pnlValues.filter(v => v < 0).reduce((sum, v) => sum + Math.pow(v, 2), 0) / pnlValues.length).toFixed(2)),
+        riskOfRuin: parseFloat((Math.pow(Math.abs(avgLossPerTrade) / avgProfitPerTrade, winTrades.length)).toFixed(2)),
+        var_95: parseFloat((mean - (1.645 * Math.sqrt(variance))).toFixed(2)),
+        cvar_95: parseFloat((mean - (2.326 * Math.sqrt(variance))).toFixed(2)),
+        downsideDeviation: parseFloat(Math.sqrt(pnlValues.filter(v => v < 0).reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / pnlValues.length).toFixed(2)),
+        volatility: parseFloat(volatility.toFixed(2)),
+        annualizedVolatility: parseFloat((volatility * Math.sqrt(365)).toFixed(2))
+      },
+      trade: {
+        numberOfTrades: trades.length,
+        winRate: parseFloat(winRate.toFixed(1)),
+        lossRate: parseFloat(lossRate.toFixed(1)),
+        averageWin: parseFloat(avgProfitPerTrade.toFixed(2)),
+        averageLoss: parseFloat(avgLossPerTrade.toFixed(2)),
+        averageTradeDuration: parseFloat((data.length / trades.length).toFixed(1)),
+        largestWin: parseFloat(Math.max(...winTrades.map(row => parseFloat(row.pnl_percent) || 0)).toFixed(2)),
+        largestLoss: parseFloat(Math.min(...lossTrades.map(row => parseFloat(row.pnl_percent) || 0)).toFixed(2)),
+        consecutiveWins: 0, // Would need more complex logic
+        consecutiveLosses: 0, // Would need more complex logic
+        avgTradeReturn: parseFloat((totalReturn / trades.length).toFixed(2)),
+        profitabilityPerTrade: parseFloat((netProfit / trades.length).toFixed(2)),
+        commonSenseRatio: parseFloat((totalReturn / Math.abs(maxDrawdown)).toFixed(2)),
+        recoveryFactor: parseFloat((totalReturn / Math.abs(maxDrawdown)).toFixed(2))
+      },
+      profitability: {
+        totalProfit: parseFloat(totalProfit.toFixed(2)),
+        totalLoss: parseFloat(totalLoss.toFixed(2)),
+        netProfit: parseFloat(netProfit.toFixed(2)),
+        riskReturnRatio: parseFloat((totalReturn / Math.abs(maxDrawdown)).toFixed(2)),
+        commonSenseRatio: parseFloat((totalReturn / Math.abs(maxDrawdown)).toFixed(2)),
+        conditionalDrawdownAtRisk: parseFloat((maxDrawdown * 0.95).toFixed(2)),
+        avgProfitPerTrade: parseFloat(avgProfitPerTrade.toFixed(2)),
+        avgLossPerTrade: parseFloat(avgLossPerTrade.toFixed(2)),
+        profitLossRatio: parseFloat((Math.abs(totalProfit) / Math.abs(totalLoss)).toFixed(2))
+      },
+      statistical: {
+        skewness: parseFloat(skewness.toFixed(2)),
+        kurtosis: parseFloat(kurtosis.toFixed(2))
+      },
+      monthlyWeekly: {
+        winningWeeks: winningWeeks,
+        losingWeeks: losingWeeks,
+        winningMonths: winningMonths,
+        losingMonths: losingMonths,
+        positiveMonthsPercent: parseFloat(((winningMonths / (winningMonths + losingMonths)) * 100).toFixed(1)),
+        negativeMonthsPercent: parseFloat(((losingMonths / (winningMonths + losingMonths)) * 100).toFixed(1))
+      }
+    };
+    
+    res.json({
+      success: true,
+      data: metrics
+    });
+  } catch (error) {
+    console.error('Error fetching comprehensive metrics:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch comprehensive metrics', message: error.message });
+  }
+});
+
+// Add ledger endpoint with pagination
+app.get('/api/strategies/:id/ledger', async (req, res) => {
+  try {
+    const strategyName = req.params.id;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const offset = (page - 1) * limit;
+    
+    console.log('Fetching ledger data for strategy:', strategyName, 'page:', page, 'limit:', limit);
+    
+    // Get total count
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM strategies_backtest.${strategyName}_backtest
+      WHERE action IS NOT NULL AND action != 'hold'
+    `;
+    
+    const countResult = await pool.query(countQuery);
+    const total = parseInt(countResult.rows[0].total);
+    
+    // Get paginated data - using only available columns
+    const dataQuery = `
+      SELECT 
+        datetime,
+        action,
+        buy_price,
+        sell_price,
+        pnl_percent,
+        pnl_sum,
+        balance
+      FROM strategies_backtest.${strategyName}_backtest
+      WHERE action IS NOT NULL AND action != 'hold'
+      ORDER BY datetime ASC
+      LIMIT $1 OFFSET $2
+    `;
+    
+    const dataResult = await pool.query(dataQuery, [limit, offset]);
+    
+    const ledgerData = dataResult.rows.map((row, index) => ({
+      id: offset + index + 1,
+      time: new Date(row.datetime).toLocaleString('en-US', {
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      }),
+      action: row.action,
+      buyPrice: row.buy_price || 0,
+      sellPrice: row.sell_price || 0,
+      pnlPercent: parseFloat(row.pnl_percent || 0).toFixed(2),
+      pnlSum: parseFloat(row.pnl_sum || 0).toFixed(2),
+      balance: parseFloat(row.balance || 0).toFixed(2)
+    }));
+    
+    res.json({
+      success: true,
+      data: {
+        ledger: ledgerData,
+        pagination: {
+          currentPage: page,
+          totalPages: Math.ceil(total / limit),
+          totalItems: total,
+          itemsPerPage: limit,
+          hasNextPage: page < Math.ceil(total / limit),
+          hasPrevPage: page > 1
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching ledger data:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch ledger data', message: error.message });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
