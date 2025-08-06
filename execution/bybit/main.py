@@ -71,6 +71,12 @@ class BybitTrader:
                 Column('balance', Float),
                 Column('pnl', Float),
                 Column('pnl_sum', Float),
+                # New fields for Bybit execution data
+                Column('filled_qty', Float),
+                Column('filled_value', Float),
+                Column('execution_fee', Float),
+                Column('order_id', String),
+                Column('execution_id', String),
                 schema='execution'
             )
             
@@ -160,6 +166,270 @@ class BybitTrader:
             logger.error(f"Error getting balance from Bybit: {e}")
             return round(self.current_balance, 2)
     
+    def _get_symbol_info(self, symbol):
+        """Get symbol information including minimum quantity and step size"""
+        try:
+            # Get instrument info from Bybit
+            self._sync_time()
+            instruments = self.client.get_instruments_info(category="linear", symbol=symbol)
+            
+            logger.info(f"Getting instrument info for {symbol}")
+            
+            if instruments['retCode'] == 0:
+                for instrument in instruments['result']['list']:
+                    if instrument['symbol'] == symbol:
+                        min_qty = float(instrument.get('minOrderQty', '0.001'))
+                        qty_step = float(instrument.get('qtyStep', '0.001'))
+                        tick_size = float(instrument.get('tickSize', '0.01'))
+                        
+                        logger.info(f"Bybit instrument info for {symbol}: min_qty={min_qty}, qty_step={qty_step}, tick_size={tick_size}")
+                        
+                        return {
+                            'min_order_qty': min_qty,
+                            'qty_step': qty_step,
+                            'tick_size': tick_size,
+                            'lot_size_filter': instrument.get('lotSizeFilter', {})
+                        }
+            
+            # Fallback values for common symbols
+            logger.warning(f"Using fallback values for {symbol}")
+            if 'BTC' in symbol:
+                return {'min_order_qty': 0.001, 'qty_step': 0.001, 'tick_size': 0.1}
+            elif 'XRP' in symbol:
+                return {'min_order_qty': 1, 'qty_step': 1, 'tick_size': 0.0001}
+            elif 'ETH' in symbol:
+                return {'min_order_qty': 0.001, 'qty_step': 0.001, 'tick_size': 0.01}
+            else:
+                return {'min_order_qty': 0.001, 'qty_step': 0.001, 'tick_size': 0.01}
+                
+        except Exception as e:
+            logger.error(f"Error getting symbol info: {e}")
+            # Return safe defaults
+            return {'min_order_qty': 0.001, 'qty_step': 0.001, 'tick_size': 0.01}
+
+    def _format_quantity(self, qty, symbol):
+        """Format quantity according to symbol requirements"""
+        try:
+            symbol_info = self._get_symbol_info(symbol)
+            min_qty = symbol_info['min_order_qty']
+            qty_step = symbol_info['qty_step']
+            
+            logger.info(f"Symbol info for {symbol}: min_qty={min_qty}, qty_step={qty_step}")
+            logger.info(f"Original quantity: {qty}")
+            
+            # Ensure minimum quantity
+            if qty < min_qty:
+                qty = min_qty
+                logger.warning(f"Quantity adjusted to minimum for {symbol}: {qty}")
+            
+            # Round to step size
+            if qty_step == 1:
+                # For whole number quantities (like XRP)
+                qty = int(qty)
+                logger.info(f"Converting to whole number for {symbol}: {qty}")
+            else:
+                # For decimal quantities (like BTC)
+                decimal_places = len(str(qty_step).split('.')[-1]) if '.' in str(qty_step) else 0
+                qty = round(qty, decimal_places)
+                logger.info(f"Rounding to {decimal_places} decimal places for {symbol}: {qty}")
+            
+            # Special handling for XRP - ensure it's a whole number
+            if 'XRP' in symbol:
+                qty = int(qty)
+                logger.info(f"Final XRP quantity: {qty}")
+            
+            logger.info(f"Formatted quantity for {symbol}: {qty} (step: {qty_step})")
+            return qty
+            
+        except Exception as e:
+            logger.error(f"Error formatting quantity: {e}")
+            # Special fallback for XRP
+            if 'XRP' in symbol:
+                return int(qty)
+            return round(qty, 3)  # Fallback
+
+    def _get_order_execution_details(self, order_id, symbol):
+        """Get actual execution details from Bybit order"""
+        try:
+            self._sync_time()
+            
+            # Get order details
+            order_response = self.client.get_order_history(
+                category="linear",
+                symbol=symbol,
+                orderId=order_id
+            )
+            
+            if order_response['retCode'] == 0 and order_response['result']['list']:
+                order = order_response['result']['list'][0]
+                
+                # Get execution details
+                execution_response = self.client.get_executions(
+                    category="linear",
+                    symbol=symbol,
+                    orderId=order_id
+                )
+                
+                if execution_response['retCode'] == 0 and execution_response['result']['list']:
+                    execution = execution_response['result']['list'][0]
+                    
+                    execution_details = {
+                        'order_id': order_id,
+                        'symbol': symbol,
+                        'side': order.get('side', ''),
+                        'filled_price': float(execution.get('execPrice', 0)),
+                        'filled_qty': float(execution.get('execQty', 0)),
+                        'filled_value': float(execution.get('execValue', 0)),
+                        'execution_fee': float(execution.get('execFee', 0)),
+                        'execution_time': execution.get('execTime', ''),
+                        'execution_id': execution.get('execId', ''),
+                        'order_status': order.get('orderStatus', ''),
+                        'order_type': order.get('orderType', ''),
+                        'time_in_force': order.get('timeInForce', ''),
+                        'take_profit': float(order.get('takeProfit', 0)),
+                        'stop_loss': float(order.get('stopLoss', 0))
+                    }
+                    
+                    logger.info(f"Execution details: {execution_details}")
+                    return execution_details
+            
+            logger.warning(f"Could not get execution details for order {order_id}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting execution details: {e}")
+            return None
+
+    def _get_account_balance_from_bybit(self):
+        """Get actual account balance from Bybit"""
+        try:
+            self._sync_time()
+            
+            # Get wallet balance
+            wallet_response = self.client.get_wallet_balance(accountType="UNIFIED")
+            
+            if wallet_response['retCode'] == 0:
+                for coin in wallet_response['result']['list']:
+                    if coin['coin'] == 'USDT':
+                        total_balance = float(coin['totalWalletBalance'])
+                        available_balance = float(coin['availableToWithdraw'])
+                        
+                        logger.info(f"Bybit balance - Total: ${total_balance:.2f}, Available: ${available_balance:.2f}")
+                        return total_balance, available_balance
+            
+            logger.warning("Could not get balance from Bybit")
+            return None, None
+            
+        except Exception as e:
+            logger.error(f"Error getting balance from Bybit: {e}")
+            return None, None
+
+    def _get_trade_history_details(self, symbol, limit=10):
+        """Get detailed trade history from Bybit"""
+        try:
+            self._sync_time()
+            
+            # Get closed PnL
+            pnl_response = self.client.get_closed_pnl(
+                category="linear",
+                symbol=symbol,
+                limit=limit
+            )
+            
+            if pnl_response['retCode'] == 0:
+                trades = pnl_response['result']['list']
+                logger.info(f"Found {len(trades)} closed trades for {symbol}")
+                
+                trade_details = []
+                for trade in trades:
+                    trade_info = {
+                        'symbol': trade.get('symbol', ''),
+                        'side': trade.get('side', ''),
+                        'entry_price': float(trade.get('avgEntryPrice', 0)),
+                        'exit_price': float(trade.get('avgExitPrice', 0)),
+                        'qty': float(trade.get('size', 0)),
+                        'realized_pnl': float(trade.get('closedPnl', 0)),
+                        'fee': float(trade.get('cumRealisedPnl', 0)),
+                        'open_time': trade.get('openTime', ''),
+                        'close_time': trade.get('closeTime', ''),
+                        'order_id': trade.get('orderId', ''),
+                        'execution_id': trade.get('execId', '')
+                    }
+                    trade_details.append(trade_info)
+                
+                return trade_details
+            
+            logger.warning(f"Could not get trade history for {symbol}")
+            return []
+            
+        except Exception as e:
+            logger.error(f"Error getting trade history: {e}")
+            return []
+
+    def _update_ledger_with_bybit_data(self, symbol, order_id, signal):
+        """Update ledger with actual Bybit execution data"""
+        try:
+            # Get execution details
+            execution_details = self._get_order_execution_details(order_id, symbol)
+            
+            if execution_details:
+                # Get actual balance from Bybit
+                total_balance, available_balance = self._get_account_balance_from_bybit()
+                
+                if total_balance is not None:
+                    self.current_balance = total_balance
+                
+                # Calculate actual PnL (entry fee as negative)
+                entry_fee = execution_details['execution_fee']
+                filled_value = execution_details['filled_value']
+                
+                # Calculate fee as percentage of position value
+                if filled_value > 0:
+                    fee_percentage = (entry_fee / filled_value) * 100
+                else:
+                    fee_percentage = 0
+                
+                actual_pnl = -fee_percentage  # Negative because it's a cost
+                
+                # Update cumulative PnL
+                self.cumulative_pnl += actual_pnl
+                
+                # Record trade with actual Bybit data
+                trade_data = {
+                    'datetime': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'predicted_direction': signal,
+                    'action': 'buy',  # Opening position
+                    'buy_price': execution_details['filled_price'],  # Actual filled price
+                    'sell_price': 0.0,  # Will be filled when position closes
+                    'balance': total_balance if total_balance else self.current_balance,
+                    'pnl': actual_pnl,
+                    'pnl_sum': self.cumulative_pnl,
+                    'filled_qty': execution_details['filled_qty'],
+                    'filled_value': execution_details['filled_value'],
+                    'execution_fee': execution_details['execution_fee'],
+                    'order_id': execution_details['order_id'],
+                    'execution_id': execution_details['execution_id']
+                }
+                
+                self._update_ledger(trade_data)
+                
+                logger.info(f"Ledger updated with Bybit data:")
+                logger.info(f"  Filled price: {execution_details['filled_price']}")
+                logger.info(f"  Filled qty: {execution_details['filled_qty']}")
+                logger.info(f"  Filled value: {execution_details['filled_value']}")
+                logger.info(f"  Execution fee: {execution_details['execution_fee']}")
+                logger.info(f"  Balance: {total_balance}")
+                logger.info(f"  PnL: {actual_pnl:.2f}%")
+                
+                return True
+            else:
+                logger.error("Could not get execution details, using fallback")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error updating ledger with Bybit data: {e}")
+            return False
+
     def _get_trading_fees(self, symbol):
         """Get trading fees for a symbol from Bybit"""
         try:
@@ -260,6 +530,11 @@ class BybitTrader:
         try:
             self._sync_time()  # Sync time before API call
             
+            # Get symbol info for proper price formatting
+            symbol_info = self._get_symbol_info(symbol)
+            tick_size = symbol_info['tick_size']
+            decimal_places = len(str(tick_size).split('.')[-1]) if '.' in str(tick_size) else 0
+            
             order_params = {
                 "category": "linear",
                 "symbol": symbol,
@@ -270,9 +545,9 @@ class BybitTrader:
             }
             
             if tp_price:
-                order_params["takeProfit"] = str(round(tp_price, 2))
+                order_params["takeProfit"] = str(round(tp_price, decimal_places))
             if sl_price:
-                order_params["stopLoss"] = str(round(sl_price, 2))
+                order_params["stopLoss"] = str(round(sl_price, decimal_places))
             
             response = self.client.place_order(**order_params)
             
@@ -288,6 +563,115 @@ class BybitTrader:
             logger.error(f"Error placing order: {e}")
             return None, False
     
+    def _close_position_with_bybit_data(self, symbol, side, qty, reason="manual"):
+        """Close position and update ledger with actual Bybit execution data"""
+        try:
+            # Close the position
+            close_side = "Sell" if side == "Buy" else "Buy"
+            
+            logger.info(f"Closing position: {close_side} {qty} {symbol}")
+            
+            response = self.client.place_order(
+                category="linear",
+                symbol=symbol,
+                side=close_side,
+                orderType="Market",
+                qty=str(qty),
+                timeInForce="GTC",
+                reduceOnly=True
+            )
+            
+            if response['retCode'] == 0:
+                order_id = response['result']['orderId']
+                logger.info(f"Close order placed successfully: {close_side} {qty} {symbol}, ID: {order_id}")
+                
+                # Wait for execution
+                time.sleep(3)
+                
+                # Get execution details
+                execution_details = self._get_order_execution_details(order_id, symbol)
+                
+                if execution_details:
+                    # Get actual balance from Bybit
+                    total_balance, available_balance = self._get_account_balance_from_bybit()
+                    
+                    if total_balance is not None:
+                        self.current_balance = total_balance
+                    
+                    # Calculate actual PnL from execution
+                    exit_fee = execution_details['execution_fee']
+                    exit_price = execution_details['filled_price']
+                    
+                    # Get the original entry data from active positions
+                    if symbol in self.active_positions:
+                        entry_data = self.active_positions[symbol]
+                        entry_price = entry_data['entry_price']
+                        entry_signal = entry_data['signal']
+                        
+                        # Calculate PnL based on price difference
+                        if entry_signal == "long":
+                            price_pnl = ((exit_price - entry_price) / entry_price) * 100
+                        else:  # short
+                            price_pnl = ((entry_price - exit_price) / entry_price) * 100
+                        
+                        # Calculate fee as percentage of position value
+                        filled_value = execution_details['filled_value']
+                        if filled_value > 0:
+                            fee_percentage = (exit_fee / filled_value) * 100
+                        else:
+                            fee_percentage = 0
+                        
+                        # Total PnL including fees
+                        total_pnl = price_pnl - fee_percentage
+                        
+                        # Update cumulative PnL
+                        self.cumulative_pnl += total_pnl
+                        
+                        # Record trade closure with actual Bybit data
+                        trade_data = {
+                            'datetime': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            'predicted_direction': entry_signal,
+                            'action': 'sell',  # Closing position
+                            'buy_price': entry_price,  # Original entry price
+                            'sell_price': exit_price,  # Actual exit price
+                            'balance': total_balance if total_balance else self.current_balance,
+                            'pnl': total_pnl,
+                            'pnl_sum': self.cumulative_pnl,
+                            'filled_qty': execution_details['filled_qty'],
+                            'filled_value': execution_details['filled_value'],
+                            'execution_fee': execution_details['execution_fee'],
+                            'order_id': execution_details['order_id'],
+                            'execution_id': execution_details['execution_id']
+                        }
+                        
+                        self._update_ledger(trade_data)
+                        
+                        logger.info(f"Position closed with Bybit data:")
+                        logger.info(f"  Entry price: {entry_price}")
+                        logger.info(f"  Exit price: {exit_price}")
+                        logger.info(f"  Price PnL: {price_pnl:.2f}%")
+                        logger.info(f"  Exit fee: {exit_fee}")
+                        logger.info(f"  Total PnL: {total_pnl:.2f}%")
+                        logger.info(f"  Balance: {total_balance}")
+                        
+                        # Remove from active positions
+                        del self.active_positions[symbol]
+                        
+                        return True
+                    else:
+                        logger.error("Could not find entry data for position")
+                        return False
+                else:
+                    logger.error("Could not get execution details for close order")
+                    return False
+            else:
+                logger.error(f"Failed to place close order: {response}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error closing position with Bybit data: {e}")
+            return False
+
     def _close_position(self, symbol, side, qty):
         """Close existing position"""
         try:
@@ -340,22 +724,43 @@ class BybitTrader:
             return False
     
     def _update_ledger(self, trade_data):
-        """Update ledger with trade data in database"""
+        """Update ledger with trade data"""
         try:
-            # Insert new trade data into database
+            # Prepare data with all fields
+            ledger_data = {
+                'datetime': trade_data['datetime'],
+                'predicted_direction': trade_data['predicted_direction'],
+                'action': trade_data['action'],
+                'buy_price': trade_data['buy_price'],
+                'sell_price': trade_data['sell_price'],
+                'balance': trade_data['balance'],
+                'pnl': trade_data['pnl'],
+                'pnl_sum': trade_data['pnl_sum'],
+                # New Bybit execution fields (optional)
+                'filled_qty': trade_data.get('filled_qty', 0.0),
+                'filled_value': trade_data.get('filled_value', 0.0),
+                'execution_fee': trade_data.get('execution_fee', 0.0),
+                'order_id': trade_data.get('order_id', ''),
+                'execution_id': trade_data.get('execution_id', '')
+            }
+            
+            # Insert into database
             query = text(f"""
                 INSERT INTO execution.ledger_{self.strategy_name} 
-                (datetime, predicted_direction, action, buy_price, sell_price, balance, pnl, pnl_sum)
-                VALUES (:datetime, :predicted_direction, :action, :buy_price, :sell_price, :balance, :pnl, :pnl_sum)
+                (datetime, predicted_direction, action, buy_price, sell_price, balance, pnl, pnl_sum, 
+                 filled_qty, filled_value, execution_fee, order_id, execution_id)
+                VALUES (:datetime, :predicted_direction, :action, :buy_price, :sell_price, :balance, :pnl, :pnl_sum,
+                        :filled_qty, :filled_value, :execution_fee, :order_id, :execution_id)
             """)
             
             with self.engine.connect() as conn:
-                conn.execute(query, trade_data)
+                conn.execute(query, ledger_data)
                 conn.commit()
             
-            logger.info(f"Ledger updated with live data: {trade_data}")
+            logger.info(f"Ledger updated: {trade_data['action']} {trade_data['predicted_direction']} at {trade_data['buy_price']}")
+            
         except Exception as e:
-            logger.error(f"Error updating ledger in database: {e}")
+            logger.error(f"Error updating ledger: {e}")
     
     def get_ledger_data(self):
         """Get all ledger data from database"""
@@ -426,7 +831,9 @@ class BybitTrader:
             # For leverage trading, position_size_usdt is the contract value
             # We need to calculate the quantity based on the contract value
             qty = position_size_usdt / current_price
-            qty = round(qty, 3)  # Round to 3 decimal places
+            
+            # Format quantity according to symbol requirements
+            qty = self._format_quantity(qty, symbol)
             
             # Ensure minimum order size
             if qty < 0.001:
@@ -439,12 +846,20 @@ class BybitTrader:
             side = "Buy" if signal == "long" else "Sell"
             
             # Calculate TP/SL prices based on entry price (current price)
+            symbol_info = self._get_symbol_info(symbol)
+            tick_size = symbol_info['tick_size']
+            
             if signal == "long":
                 tp_price = current_price * (1 + tp_percent)
                 sl_price = current_price * (1 - sl_percent)
             else:  # short
                 tp_price = current_price * (1 - tp_percent)
                 sl_price = current_price * (1 + sl_percent)
+            
+            # Round prices to tick size
+            decimal_places = len(str(tick_size).split('.')[-1]) if '.' in str(tick_size) else 0
+            tp_price = round(tp_price, decimal_places)
+            sl_price = round(sl_price, decimal_places)
             
             logger.info(f"Entry price: {current_price}")
             logger.info(f"Intended position size: {position_size_usdt} USDT")
@@ -463,61 +878,47 @@ class BybitTrader:
             )
             
             if success:
-                # Get the actual position details from Bybit
-                time.sleep(2)  # Wait a moment for position to be created
-                actual_position = self._get_position(symbol)
+                # Wait a moment for order to be executed
+                time.sleep(3)
                 
-                if actual_position:
-                    # Use actual position value from Bybit
-                    actual_position_value = actual_position['position_value']
-                    actual_qty = actual_position['size']
-                    logger.info(f"Actual position created: {actual_qty} {symbol} = ${actual_position_value:.2f} USDT")
+                # Update ledger with actual Bybit execution data
+                ledger_updated = self._update_ledger_with_bybit_data(symbol, order_id, signal)
+                
+                if ledger_updated:
+                    # Get actual position details from Bybit
+                    actual_position = self._get_position(symbol)
+                    
+                    if actual_position:
+                        # Use actual position value from Bybit
+                        actual_position_value = actual_position['position_value']
+                        actual_qty = actual_position['size']
+                        logger.info(f"Actual position created: {actual_qty} {symbol} = ${actual_position_value:.2f} USDT")
+                    else:
+                        # Fallback to intended values
+                        actual_position_value = position_size_usdt
+                        actual_qty = qty
+                        logger.warning("Could not get actual position details, using intended values")
+                    
+                    # Store active position info with actual values
+                    self.active_positions[symbol] = {
+                        'entry_price': current_price,
+                        'qty': actual_qty,
+                        'side': side,
+                        'tp_price': tp_price,
+                        'sl_price': sl_price,
+                        'signal': signal,
+                        'order_id': order_id,
+                        'position_size_usdt': actual_position_value,  # Actual contract value from Bybit
+                        'fee_cost': 0  # Will be updated from Bybit data
+                    }
+                    
+                    logger.info(f"Trade opened successfully: {symbol} {signal}")
+                    logger.info(f"Actual contract value: ${actual_position_value:.2f} USDT")
+                    logger.info(f"Actual quantity: {actual_qty} {symbol}")
+                    return True
                 else:
-                    # Fallback to intended values
-                    actual_position_value = position_size_usdt
-                    actual_qty = qty
-                    logger.warning("Could not get actual position details, using intended values")
-                
-                # Calculate fee cost (based on actual position value)
-                fee_cost = actual_position_value * taker_fee
-                new_balance = round(self.current_balance - fee_cost, 2)
-                
-                # Update current balance
-                self.current_balance = new_balance
-                
-                # Record trade in ledger - BUY action for opening position
-                trade_data = {
-                    'datetime': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    'predicted_direction': signal,
-                    'action': 'buy',  # Always 'buy' when opening position
-                    'buy_price': current_price,  # Entry price
-                    'sell_price': 0.0,  # Will be filled when position closes
-                    'balance': new_balance,
-                    'pnl': -taker_fee * 100,  # Entry fee as negative PnL
-                    'pnl_sum': self.cumulative_pnl - (taker_fee * 100)  # Cumulative PnL
-                }
-                
-                self._update_ledger(trade_data)
-                
-                # Store active position info with actual values
-                self.active_positions[symbol] = {
-                    'entry_price': current_price,
-                    'qty': actual_qty,
-                    'side': side,
-                    'tp_price': tp_price,
-                    'sl_price': sl_price,
-                    'signal': signal,
-                    'order_id': order_id,
-                    'position_size_usdt': actual_position_value,  # Actual contract value from Bybit
-                    'fee_cost': fee_cost
-                }
-                
-                logger.info(f"Trade opened successfully: {symbol} {signal} at {current_price}")
-                logger.info(f"Actual contract value: ${actual_position_value:.2f} USDT")
-                logger.info(f"Actual quantity: {actual_qty} {symbol}")
-                logger.info(f"Fee cost: ${fee_cost:.2f} USDT")
-                logger.info(f"New balance: ${new_balance:.2f} USDT")
-                return True
+                    logger.error("Failed to update ledger with Bybit data")
+                    return False
             else:
                 logger.error("Failed to place order")
                 return False
@@ -571,86 +972,30 @@ class BybitTrader:
         return True
     
     def force_close_position(self, symbol):
-        """Force close position at current market price (for signal change)"""
+        """Force close position with Bybit data"""
         try:
-            position = self._get_position(symbol)
-            if position:
-                logger.info(f"Force closing position due to signal change: {position}")
+            # Get current position
+            current_position = self._get_position(symbol)
+            
+            if current_position:
+                logger.info(f"Force closing position: {current_position}")
                 
-                # Check if position size is valid
-                if position['size'] <= 0:
-                    logger.info(f"Position size is zero for {symbol} - nothing to close")
-                    # Remove from active positions
-                    if symbol in self.active_positions:
-                        del self.active_positions[symbol]
-                        logger.info(f"Removed {symbol} from active positions tracking")
+                # Use the new method with Bybit data
+                success = self._close_position_with_bybit_data(
+                    symbol=symbol,
+                    side=current_position['side'],
+                    qty=current_position['size'],
+                    reason="force_close"
+                )
+                
+                if success:
+                    logger.info(f"Position force closed successfully: {symbol}")
                     return True
-                
-                # Close the position at market price
-                if self._close_position(symbol, position['side'], position['size']):
-                    # Get current price for ledger
-                    current_price = self._get_current_price(symbol)
-                    if current_price:
-                        # Get actual position details from active positions
-                        active_position = self.active_positions.get(symbol)
-                        if active_position:
-                            # Use stored position data for accurate calculations
-                            entry_price = active_position['entry_price']
-                            position_size_usdt = active_position['position_size_usdt']  # Actual contract value
-                        else:
-                            # Fallback to current position data
-                            entry_price = position['entry_price']
-                            position_size_usdt = position['position_value']  # Contract value
-                        
-                        if position['side'] == 'Buy':  # Long position
-                            gross_pnl_percent = (current_price - entry_price) / entry_price
-                        else:  # Short position
-                            gross_pnl_percent = (entry_price - current_price) / entry_price
-                        
-                        # Get trading fees for exit
-                        taker_fee, _ = self._get_trading_fees(symbol)
-                        exit_fee = position_size_usdt * taker_fee
-                        net_pnl_usdt = (position_size_usdt * gross_pnl_percent) - exit_fee
-                        net_pnl_percent = net_pnl_usdt / position_size_usdt
-                        
-                        # Update balance and cumulative PnL
-                        self.current_balance = round(self.current_balance + net_pnl_usdt, 2)
-                        self.cumulative_pnl += net_pnl_percent * 100
-                        
-                        # Update ledger - SELL action for closing position
-                        trade_data = {
-                            'datetime': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            'predicted_direction': 'long' if position['side'] == 'Buy' else 'short',
-                            'action': 'sell - direction_change',  # SELL when closing position
-                            'buy_price': entry_price,  # Original entry price
-                            'sell_price': current_price,  # Exit price
-                            'balance': self.current_balance,
-                            'pnl': net_pnl_percent * 100,
-                            'pnl_sum': self.cumulative_pnl
-                        }
-                        
-                        self._update_ledger(trade_data)
-                        
-                        # Remove from active positions
-                        if symbol in self.active_positions:
-                            del self.active_positions[symbol]
-                        
-                        logger.info(f"Position force closed: {symbol} at {current_price}")
-                        logger.info(f"Actual contract value: ${position_size_usdt:.2f} USDT")
-                        logger.info(f"Net PnL: {net_pnl_percent*100:.2f}% (${net_pnl_usdt:.2f})")
-                        logger.info(f"Exit fee: ${exit_fee:.2f}")
-                        logger.info(f"New balance: ${self.current_balance:.2f}")
-                        logger.info(f"Cumulative PnL: {self.cumulative_pnl:.2f}%")
-                        return True
-                
-                logger.error(f"Failed to force close position: {symbol}")
-                return False
+                else:
+                    logger.error(f"Failed to force close position: {symbol}")
+                    return False
             else:
-                logger.info(f"No position to close for {symbol}")
-                # Remove from active positions if it was tracked but doesn't exist
-                if symbol in self.active_positions:
-                    del self.active_positions[symbol]
-                    logger.info(f"Removed {symbol} from active positions tracking")
+                logger.info(f"No position found for {symbol} - nothing to close")
                 return True
                 
         except Exception as e:
@@ -739,6 +1084,23 @@ class BybitTrader:
         # Generate signal every 4 hours (0, 4, 8, 12, 16, 20)
         return current_time.hour % 4 == 0 and current_time.minute == 0
 
+    def get_strategy_config(self):
+        """Get strategy configuration from database"""
+        try:
+            generator = StrategySignalGenerator()
+            strategy_config = generator.get_strategy_config(self.strategy_name)
+            
+            if strategy_config is None:
+                logger.error(f"Could not get strategy configuration for {self.strategy_name}")
+                return None
+                
+            logger.info(f"Strategy configuration loaded: {strategy_config}")
+            return strategy_config
+            
+        except Exception as e:
+            logger.error(f"Error getting strategy configuration: {e}")
+            return None
+
     def get_signal_from_strategy(self):
         """Get signal from strategy generator"""
         try:
@@ -764,14 +1126,20 @@ class BybitTrader:
     def main(self):
         """Main function with position management logic"""
         try:
+            # Get strategy configuration from database
+            strategy_config = self.get_strategy_config()
+            if strategy_config is None:
+                logger.error("Failed to get strategy configuration. Exiting.")
+                return
+            
             # ============================================
-            # CONFIGURE YOUR TRADING PARAMETERS HERE
+            # GET TRADING PARAMETERS FROM STRATEGY CONFIG
             # ============================================
-            symbol = "BTCUSDT"          # Trading symbol (e.g., "BTCUSDT", "ETHUSDT")
-            tp_percent = 0.05          # Take profit: 0.05 = 5%
-            sl_percent = 0.03          # Stop loss: 0.03 = 3%
-            position_size_usdt = 1000  # Position size in USDT (contract value)
-            leverage = 1               # Leverage (1 = no leverage, 10 = 10x, etc.)
+            symbol = strategy_config.get('symbol', 'BTCUSDT').upper() + 'USDT'  # Convert to USDT format
+            tp_percent = strategy_config.get('take_profit', 0.05)  # Take profit percentage
+            sl_percent = strategy_config.get('stop_loss', 0.03)    # Stop loss percentage
+            position_size_usdt = strategy_config.get('position_size', 1000)  # Position size in USDT
+            leverage = strategy_config.get('leverage', 1)           # Leverage
             # ============================================
             
             logger.info("=== Starting Bybit Trading Bot with Database Ledger ===")
@@ -996,7 +1364,7 @@ def export_strategy_ledger(strategy_name, filename=None):
         return None
 
 
-def main(strategy_name="strategy_02"):
+def main(strategy_name="strategy_09"):
     """Main function to start the trading bot"""
     try:
         # Initialize trader with strategy name

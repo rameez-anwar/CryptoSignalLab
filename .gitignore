@@ -78,9 +78,9 @@ jspm_packages/
 .nuxt
 dist
 
-# Gatsby files
+# Gatsby files (but allow React public folder)
 .cache/
-public
+# public (but allow frontend/client/public)
 
 # Storybook build outputs
 .out
@@ -111,9 +111,8 @@ Thumbs.db
 *.sqlite
 *.sqlite3
 
-# Data files
+# Data files (but allow package.json files)
 *.csv
-*.json
 data/
 ledger_*.csv
 
