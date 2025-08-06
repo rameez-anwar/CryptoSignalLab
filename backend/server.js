@@ -439,6 +439,76 @@ app.get('/api/strategies/:id/pnl_timeseries', async (req, res) => {
   }
 });
 
+// Add win/loss endpoint
+app.get('/api/strategies/:id/winloss', async (req, res) => {
+  try {
+    const strategyName = req.params.id;
+    console.log('Fetching win/loss data for strategy:', strategyName);
+    
+    // Get all PNL data for individual bar chart
+    const pnlQuery = `
+      SELECT pnl_percent
+      FROM strategies_backtest.${strategyName}_backtest
+      WHERE pnl_percent IS NOT NULL
+      ORDER BY datetime ASC
+    `;
+    
+    const pnlResult = await pool.query(pnlQuery);
+    console.log('PNL data rows:', pnlResult.rows.length);
+    
+    // Calculate win/loss based on PNL values
+    let winCount = 0;
+    let lossCount = 0;
+    const individualPnl = [];
+    
+    pnlResult.rows.forEach(row => {
+      const pnl = parseFloat(row.pnl_percent);
+      
+      // Skip transaction fee (-0.05)
+      if (pnl === -0.05) {
+        return;
+      }
+      
+      // Add to individual PNL array for bar chart
+      individualPnl.push(pnl);
+      
+      // Count as win or loss
+      if (pnl > 0) {
+        winCount++;
+      } else if (pnl < 0) {
+        lossCount++;
+      }
+    });
+    
+    const total = winCount + lossCount;
+    const winPercentage = total > 0 ? ((winCount / total) * 100).toFixed(1) : 0;
+    const lossPercentage = total > 0 ? ((lossCount / total) * 100).toFixed(1) : 0;
+    
+    const winLossData = {
+      wins: {
+        count: winCount,
+        percentage: parseFloat(winPercentage)
+      },
+      losses: {
+        count: lossCount,
+        percentage: parseFloat(lossPercentage)
+      },
+      total: total,
+      individualPnl: individualPnl
+    };
+    
+    console.log('Calculated win/loss data:', winLossData);
+    
+    res.json({
+      success: true,
+      data: winLossData
+    });
+  } catch (error) {
+    console.error('Error fetching win/loss data:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch win/loss data', message: error.message });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
   try {

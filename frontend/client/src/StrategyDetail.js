@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, AlertCircle } from 'lucide-react';
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, BarChart, Bar } from 'recharts';
 
 function StrategyDetail({ strategyName, onBack }) {
   const [strategy, setStrategy] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [pnlSeries, setPnlSeries] = useState([]);
+  const [winLossData, setWinLossData] = useState(null);
 
   const fetchStrategyDetails = useCallback(async () => {
     try {
@@ -36,10 +37,43 @@ function StrategyDetail({ strategyName, onBack }) {
     }
   }, [strategyName]);
 
+  const fetchWinLossData = useCallback(async () => {
+    try {
+      console.log('Fetching win/loss data for strategy:', strategyName);
+      const response = await axios.get(`/api/strategies/${strategyName}/winloss`);
+      console.log('Win/Loss response:', response.data);
+      if (response.data.success) {
+        setWinLossData(response.data.data);
+      }
+    } catch (err) {
+      console.error('Error fetching win/loss data:', err);
+    }
+  }, [strategyName]);
+
   useEffect(() => {
     fetchStrategyDetails();
     fetchPnlData();
-  }, [fetchStrategyDetails, fetchPnlData]);
+    fetchWinLossData();
+    
+    // Remove focus outlines from all SVG elements
+    const style = document.createElement('style');
+    style.textContent = `
+      svg:focus, svg *:focus {
+        outline: none !important;
+      }
+      .recharts-wrapper:focus, .recharts-wrapper *:focus {
+        outline: none !important;
+      }
+      .recharts-surface:focus {
+        outline: none !important;
+      }
+    `;
+    document.head.appendChild(style);
+    
+    return () => {
+      document.head.removeChild(style);
+    };
+  }, [fetchStrategyDetails, fetchPnlData, fetchWinLossData]);
 
   const getPerformanceColor = (value) => {
     return value >= 0 ? 'text-green-600' : 'text-red-600';
@@ -312,11 +346,13 @@ function StrategyDetail({ strategyName, onBack }) {
           </div>
           
           {pnlSeries.length > 0 ? (
-            <div className="relative">
-              <ResponsiveContainer width="100%" height={400}>
+            <div className="relative focus:outline-none" tabIndex="-1" style={{ outline: 'none' }}>
+              <ResponsiveContainer width="100%" height={400} className="focus:outline-none" style={{ outline: 'none' }}>
                 <AreaChart 
                   data={pnlSeries} 
                   margin={{ top: 20, right: 30, left: 20, bottom: 20 }}
+                  className="focus:outline-none"
+                  style={{ outline: 'none' }}
                 >
                   <defs>
                     <linearGradient id="colorPnl" x1="0" y1="0" x2="0" y2="1">
@@ -423,6 +459,178 @@ function StrategyDetail({ strategyName, onBack }) {
                 <h4 className="text-lg font-semibold text-gray-700 mb-2">No Performance Data</h4>
                 <p className="text-gray-500 text-sm max-w-md">
                   P&L data will appear here once backtest results are available for this strategy
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Win/Loss Section */}
+        <div className="bg-gradient-to-br from-white via-gray-50 to-red-50 rounded-2xl shadow-2xl p-8 mt-8 border border-gray-100">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h3 className="text-2xl font-bold text-gray-900 mb-2">Win/Loss Analysis</h3>
+              <p className="text-gray-600 text-sm">Take Profit vs Stop Loss performance breakdown</p>
+            </div>
+            <div className="flex items-center space-x-4">
+              <div className="flex items-center space-x-2">
+                <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                <span className="text-sm font-medium text-gray-700">Wins (TP)</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+                <span className="text-sm font-medium text-gray-700">Losses (SL)</span>
+              </div>
+            </div>
+          </div>
+          
+          {winLossData && winLossData.total > 0 ? (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 h-96">
+              {/* Individual PNL Bar Chart */}
+              <div className="flex flex-col h-full focus:outline-none" tabIndex="-1" style={{ outline: 'none' }}>
+                <h4 className="text-lg font-semibold text-gray-900 mb-3 text-center">Individual P&L Distribution</h4>
+                <div className="flex-1 min-h-0 focus:outline-none" tabIndex="-1" style={{ outline: 'none' }}>
+                  <ResponsiveContainer width="100%" height="100%" className="focus:outline-none" style={{ outline: 'none' }}>
+                    <BarChart 
+                      data={winLossData?.individualPnl?.map((pnl, index) => ({ 
+                        index, 
+                        pnl, 
+                        color: pnl > 0 ? '#10b981' : pnl < 0 ? '#ef4444' : '#6b7280' 
+                      })) || []}
+                      margin={{ top: 10, right: 20, left: 10, bottom: 10 }}
+                      className="focus:outline-none"
+                      style={{ outline: 'none' }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" opacity={0.3} />
+                      <XAxis 
+                        dataKey="index" 
+                        tick={{ fontSize: 10, fill: '#6b7280' }}
+                        tickLine={false}
+                        axisLine={{ stroke: '#d1d5db', strokeWidth: 1 }}
+                      />
+                      <YAxis 
+                        tick={{ fontSize: 10, fill: '#6b7280' }}
+                        tickLine={false}
+                        axisLine={{ stroke: '#d1d5db', strokeWidth: 1 }}
+                        tickFormatter={(value) => `${value.toFixed(1)}%`}
+                      />
+                      <Tooltip 
+                        contentStyle={{
+                          backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                          border: '1px solid #e5e7eb',
+                          borderRadius: '8px',
+                          boxShadow: '0 10px 25px rgba(0, 0, 0, 0.1)',
+                          fontSize: '12px'
+                        }}
+                        formatter={(value, name) => [`${parseFloat(value).toFixed(2)}%`, 'P&L']}
+                        labelFormatter={(label) => `Trade ${parseInt(label) + 1}`}
+                      />
+                      <Bar 
+                        dataKey="pnl" 
+                        fill={(entry) => entry.color}
+                        radius={[3, 3, 0, 0]}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+              
+              {/* Donut Chart */}
+              <div className="flex flex-col h-full focus:outline-none" tabIndex="-1" style={{ outline: 'none' }}>
+                <h4 className="text-lg font-semibold text-gray-900 mb-3 text-center">Win/Loss Summary</h4>
+                <div className="flex-1 flex flex-col justify-start items-center focus:outline-none" tabIndex="-1" style={{ outline: 'none' }}>
+                  <div className="w-full max-w-xs mb-2 focus:outline-none" tabIndex="-1" style={{ outline: 'none' }}>
+                    <ResponsiveContainer width="100%" height={220} className="focus:outline-none" style={{ outline: 'none' }}>
+                      <PieChart className="focus:outline-none" style={{ outline: 'none' }}>
+                        <Pie
+                          data={[
+                            { name: 'Wins', value: winLossData?.wins?.percentage || 0, color: '#10b981' },
+                            { name: 'Losses', value: winLossData?.losses?.percentage || 0, color: '#ef4444' }
+                          ]}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={45}
+                          outerRadius={90}
+                          paddingAngle={8}
+                          dataKey="value"
+                        >
+                          {[
+                            { name: 'Wins', value: winLossData?.wins?.percentage || 0, color: '#10b981' },
+                            { name: 'Losses', value: winLossData?.losses?.percentage || 0, color: '#ef4444' }
+                          ].map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry.color} />
+                          ))}
+                        </Pie>
+                        <Tooltip 
+                          contentStyle={{
+                            backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                            border: '1px solid #e5e7eb',
+                            borderRadius: '8px',
+                            boxShadow: '0 10px 25px rgba(0, 0, 0, 0.1)',
+                            fontSize: '12px'
+                          }}
+                          formatter={(value) => [`${value}%`, 'Percentage']}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                  
+                  {/* Stats Cards Inside Win/Loss Analysis */}
+                  <div className="w-full grid grid-cols-3 gap-3 -mt-2">
+                    {/* Wins Card */}
+                    <div className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-lg shadow-sm p-3 border border-green-100">
+                      <div className="flex items-center space-x-2 mb-1">
+                        <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                        <span className="text-xs font-semibold text-gray-900">Wins</span>
+                      </div>
+                      <div className="text-lg font-bold text-green-600">
+                        {winLossData?.wins?.percentage || 0}%
+                      </div>
+                      <div className="text-xs text-gray-600">
+                        {winLossData?.wins?.count || 0} trades
+                      </div>
+                    </div>
+                    
+                    {/* Losses Card */}
+                    <div className="bg-gradient-to-br from-red-50 to-pink-50 rounded-lg shadow-sm p-3 border border-red-100">
+                      <div className="flex items-center space-x-2 mb-1">
+                        <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+                        <span className="text-xs font-semibold text-gray-900">Losses</span>
+                      </div>
+                      <div className="text-lg font-bold text-red-600">
+                        {winLossData?.losses?.percentage || 0}%
+                      </div>
+                      <div className="text-xs text-gray-600">
+                        {winLossData?.losses?.count || 0} trades
+                      </div>
+                    </div>
+                    
+                    {/* Total Trades Card */}
+                    <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-lg shadow-sm p-3 border border-blue-100">
+                      <div className="flex items-center space-x-2 mb-1">
+                        <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                        <span className="text-xs font-semibold text-gray-900">Total</span>
+                      </div>
+                      <div className="text-lg font-bold text-blue-600">
+                        {winLossData?.total || 0}
+                      </div>
+                      <div className="text-xs text-gray-600">
+                        trades
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center h-80">
+              <div className="text-center">
+                <div className="w-20 h-20 bg-gradient-to-br from-gray-100 to-gray-200 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <BarChart3 className="w-10 h-10 text-gray-400" />
+                </div>
+                <h4 className="text-lg font-semibold text-gray-700 mb-2">No Win/Loss Data</h4>
+                <p className="text-gray-500 text-sm max-w-md">
+                  Win/Loss data will appear here once TP and SL trades are available for this strategy
                 </p>
               </div>
             </div>
