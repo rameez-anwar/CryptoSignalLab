@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { TrendingUp, TrendingDown, Activity, AlertCircle, BarChart3, Search, Filter, Users, ChevronLeft, ChevronRight, X } from 'lucide-react';
+import StrategyDetail from './StrategyDetail';
 import './App.css';
 
 function App() {
@@ -16,6 +17,7 @@ function App() {
   const [currentPage, setCurrentPage] = useState(1);
   const [recordsPerPage] = useState(10);
   const [showFilters, setShowFilters] = useState(false);
+  const [selectedStrategy, setSelectedStrategy] = useState(null);
 
   useEffect(() => {
     fetchStrategies();
@@ -152,6 +154,24 @@ function App() {
     
     return pageNumbers;
   };
+
+  const handleStrategyClick = (strategy) => {
+    setSelectedStrategy(strategy.name);
+  };
+
+  const handleBackToStrategies = () => {
+    setSelectedStrategy(null);
+  };
+
+  // If a strategy is selected, show the detail view
+  if (selectedStrategy) {
+    return (
+      <StrategyDetail 
+        strategyName={selectedStrategy} 
+        onBack={handleBackToStrategies}
+      />
+    );
+  }
 
   const renderSimulatorContent = () => {
     if (loading) {
@@ -357,7 +377,11 @@ function App() {
               </thead>
               <tbody className="bg-white divide-y divide-gray-100">
                 {currentRecords.map((strategy) => (
-                  <tr key={strategy.id} className="hover:bg-gradient-to-r hover:from-blue-50 hover:to-indigo-50 transition-all duration-200">
+                  <tr 
+                    key={strategy.id} 
+                    className="hover:bg-gradient-to-r hover:from-blue-50 hover:to-indigo-50 transition-all duration-200 cursor-pointer"
+                    onClick={() => handleStrategyClick(strategy)}
+                  >
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm font-semibold text-gray-900">{strategy.name}</div>
                     </td>
