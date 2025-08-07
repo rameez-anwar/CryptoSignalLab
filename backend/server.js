@@ -702,7 +702,7 @@ app.get('/api/strategies/:id/ledger', async (req, res) => {
   try {
     const strategyName = req.params.id;
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
+    const limit = parseInt(req.query.limit) || 10000; // Support large limits for virtualized table
     const offset = (page - 1) * limit;
     
     console.log('Fetching ledger data for strategy:', strategyName, 'page:', page, 'limit:', limit);
@@ -720,6 +720,7 @@ app.get('/api/strategies/:id/ledger', async (req, res) => {
     // Get paginated data - using only available columns
     const dataQuery = `
       SELECT 
+        ROW_NUMBER() OVER (ORDER BY datetime) as id,
         datetime,
         action,
         buy_price,
@@ -735,8 +736,8 @@ app.get('/api/strategies/:id/ledger', async (req, res) => {
     
     const dataResult = await pool.query(dataQuery, [limit, offset]);
     
-    const ledgerData = dataResult.rows.map((row, index) => ({
-      id: offset + index + 1,
+    const ledgerData = dataResult.rows.map(row => ({
+      id: row.id,
       time: new Date(row.datetime).toLocaleString('en-US', {
         day: '2-digit',
         month: 'short',

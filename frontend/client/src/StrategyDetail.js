@@ -1,7 +1,15 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, AlertCircle } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, BarChart, Bar } from 'recharts';
+import {
+  useReactTable,
+  getCoreRowModel,
+  getPaginationRowModel,
+  getSortedRowModel,
+  flexRender,
+  createColumnHelper,
+} from '@tanstack/react-table';
 
 function StrategyDetail({ strategyName, onBack }) {
   const [strategy, setStrategy] = useState(null);
@@ -14,6 +22,95 @@ function StrategyDetail({ strategyName, onBack }) {
   const [ledgerLoading, setLedgerLoading] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
+  const [totalItems, setTotalItems] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+
+  // TanStack Table column helper
+  const columnHelper = createColumnHelper();
+
+  // Define columns for TanStack Table - same columns as before
+  const columns = useMemo(
+    () => [
+      columnHelper.accessor('id', {
+        header: '#',
+        cell: (info) => `#${info.getValue()}`,
+        size: 60,
+      }),
+      columnHelper.accessor('time', {
+        header: 'Time',
+        cell: (info) => info.getValue(),
+        size: 150,
+      }),
+      columnHelper.accessor('action', {
+        header: 'Action',
+        cell: (info) => {
+          const action = info.getValue();
+          const getActionStyle = (action) => {
+            switch (action) {
+              case 'buy':
+                return 'bg-gradient-to-r from-green-400 to-emerald-500 text-white shadow-lg hover:shadow-xl transform hover:scale-105';
+              case 'sell':
+                return 'bg-gradient-to-r from-red-400 to-pink-500 text-white shadow-lg hover:shadow-xl transform hover:scale-105';
+              case 'take_profit':
+                return 'bg-gradient-to-r from-blue-400 to-indigo-500 text-white shadow-lg hover:shadow-xl transform hover:scale-105';
+              case 'stop_loss':
+                return 'bg-gradient-to-r from-orange-400 to-yellow-500 text-white shadow-lg hover:shadow-xl transform hover:scale-105';
+              default:
+                return 'bg-gradient-to-r from-gray-400 to-gray-500 text-white shadow-lg hover:shadow-xl transform hover:scale-105';
+            }
+          };
+          return (
+            <span className={`inline-flex px-3 py-1 text-xs font-bold rounded-full transition-all duration-200 ${getActionStyle(action)}`}>
+              {action.toUpperCase()}
+            </span>
+          );
+        },
+        size: 100,
+      }),
+      columnHelper.accessor('buyPrice', {
+        header: 'Buy Price',
+        cell: (info) => `$${parseFloat(info.getValue() || 0).toFixed(2)}`,
+        size: 120,
+      }),
+      columnHelper.accessor('sellPrice', {
+        header: 'Sell Price',
+        cell: (info) => `$${parseFloat(info.getValue() || 0).toFixed(2)}`,
+        size: 120,
+      }),
+      columnHelper.accessor('pnlPercent', {
+        header: 'PNL Percent',
+        cell: (info) => {
+          const value = parseFloat(info.getValue());
+          const isPositive = value >= 0;
+          return (
+            <span className={`font-bold ${isPositive ? 'text-green-600' : 'text-red-600'}`}>
+              {isPositive ? '+' : ''}{value.toFixed(2)}%
+            </span>
+          );
+        },
+        size: 120,
+      }),
+      columnHelper.accessor('pnlSum', {
+        header: 'PNL Sum',
+        cell: (info) => {
+          const value = parseFloat(info.getValue());
+          const isPositive = value >= 0;
+          return (
+            <span className={`font-bold ${isPositive ? 'text-green-600' : 'text-red-600'}`}>
+              {isPositive ? '+' : ''}{value.toFixed(2)}%
+            </span>
+          );
+        },
+        size: 120,
+      }),
+      columnHelper.accessor('balance', {
+        header: 'Balance',
+        cell: (info) => `$${parseFloat(info.getValue()).toFixed(2)}`,
+        size: 120,
+      }),
+    ],
+    []
+  );
 
   const fetchStrategyDetails = useCallback(async () => {
     try {
@@ -71,23 +168,43 @@ function StrategyDetail({ strategyName, onBack }) {
   const fetchLedgerData = useCallback(async () => {
     try {
       setLedgerLoading(true);
-      console.log('Fetching ledger data for strategy:', strategyName, 'page:', currentPage, 'limit:', itemsPerPage);
+      console.log('Fetching ledger data for strategy:', strategyName);
       const response = await axios.get(`/api/strategies/${strategyName}/ledger`, {
         params: {
-          page: currentPage,
-          limit: itemsPerPage
+          page: 1,
+          limit: 10000 // Fetch large amount for client-side virtualization
         }
       });
+      
       console.log('Ledger response:', response.data);
       if (response.data.success) {
-        setLedgerData(response.data.data);
+        setLedgerData(response.data.data.ledger || []);
+        setTotalItems(response.data.data.ledger?.length || 0);
+        setTotalPages(Math.ceil((response.data.data.ledger?.length || 0) / itemsPerPage));
       }
     } catch (err) {
       console.error('Error fetching ledger data:', err);
+      setLedgerData([]);
+      setTotalItems(0);
+      setTotalPages(0);
     } finally {
       setLedgerLoading(false);
     }
-  }, [strategyName, currentPage, itemsPerPage]);
+  }, [strategyName, itemsPerPage]);
+
+  // TanStack Table instance
+  const table = useReactTable({
+    data: ledgerData || [],
+    columns,
+    getCoreRowModel: getCoreRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    initialState: {
+      pagination: {
+        pageSize: itemsPerPage,
+      },
+    },
+  });
 
   useEffect(() => {
     fetchStrategyDetails();
@@ -993,225 +1110,195 @@ function StrategyDetail({ strategyName, onBack }) {
         {/* Strategy Ledger Section */}
         <div className="bg-gradient-to-br from-white via-gray-50 to-blue-50 rounded-2xl shadow-2xl p-8 mt-8 border border-gray-100">
           <div className="flex items-center justify-between mb-8">
-            <div>
-              <h3 className="text-2xl font-bold text-gray-900 mb-2">Strategy Ledger</h3>
-              <p className="text-gray-600 text-sm">Detailed trade history and transaction records</p>
-            </div>
             <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-2">
-                <div className="w-3 h-3 bg-green-500 rounded-full"></div>
-                <span className="text-sm font-medium text-gray-700">Buy</span>
+              <div className="p-3 bg-gradient-to-r from-blue-500 to-indigo-600 rounded-xl shadow-lg">
+                <BarChart3 className="w-6 h-6 text-white" />
               </div>
-              <div className="flex items-center space-x-2">
-                <div className="w-3 h-3 bg-red-500 rounded-full"></div>
-                <span className="text-sm font-medium text-gray-700">Sell</span>
-              </div>
-              <div className="flex items-center space-x-2">
-                <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
-                <span className="text-sm font-medium text-gray-700">TP/SL</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex justify-between items-center mb-6">
-            <div className="flex items-center space-x-4">
-              <div className="bg-white rounded-lg px-4 py-2 shadow-sm border border-gray-200">
-                <span className="text-sm font-medium text-gray-700">Rows per page:</span>
-                <select
-                  className="ml-2 border-none bg-transparent text-sm font-semibold text-blue-600 focus:outline-none focus:ring-0"
-                  value={itemsPerPage}
-                  onChange={(e) => {
-                    const newItemsPerPage = parseInt(e.target.value);
-                    setItemsPerPage(newItemsPerPage);
-                    setCurrentPage(1);
-                  }}
-                >
-                  <option value="10">10</option>
-                  <option value="20">20</option>
-                  <option value="50">50</option>
-                </select>
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900 mb-1">Strategy Ledger</h2>
+                <p className="text-gray-600">Complete trade history with professional analytics</p>
               </div>
             </div>
             
-            {ledgerData && ledgerData.pagination && (
-              <div className="text-sm text-gray-600">
-                Showing {ledgerData.pagination.currentPage * ledgerData.pagination.itemsPerPage - ledgerData.pagination.itemsPerPage + 1}-
-                {Math.min(ledgerData.pagination.currentPage * ledgerData.pagination.itemsPerPage, ledgerData.pagination.totalItems)} of {ledgerData.pagination.totalItems} trades
+            <div className="flex items-center space-x-4">
+              <div className="flex items-center space-x-2 bg-white rounded-lg px-4 py-2 shadow-sm border border-gray-200">
+                <span className="text-sm font-medium text-gray-600">Rows per page:</span>
+                <select
+                  className="border-none bg-transparent text-sm font-semibold text-blue-600 focus:outline-none focus:ring-0"
+                  value={itemsPerPage}
+                  onChange={(e) => {
+                    const newItemsPerPage = parseInt(e.target.value);
+                    table.setPageSize(newItemsPerPage);
+                    setItemsPerPage(newItemsPerPage);
+                  }}
+                >
+                  {[10, 25, 50, 100, 250, 500].map(pageSize => (
+                    <option key={pageSize} value={pageSize}>
+                      {pageSize}
+                    </option>
+                  ))}
+                </select>
               </div>
-            )}
+            </div>
           </div>
 
           {ledgerLoading ? (
-            <div className="flex justify-center items-center h-64">
-              <div className="flex items-center space-x-3">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-                <span className="text-gray-600 font-medium">Loading trade history...</span>
-              </div>
+            <div className="flex items-center justify-center py-12">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+              <span className="ml-3 text-gray-600">Loading trade history...</span>
             </div>
-          ) : ledgerData && ledgerData.ledger && ledgerData.ledger.length > 0 ? (
+          ) : ledgerData && ledgerData.length > 0 ? (
             <>
-              {/* Professional Table Design */}
+              {/* TanStack Table Implementation */}
               <div className="bg-white rounded-xl shadow-lg overflow-hidden border border-gray-200">
                 <div className="overflow-x-auto">
                   <table className="min-w-full">
-                    <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
-                      <tr>
-                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-b border-gray-200">
-                          #
-                        </th>
-                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-b border-gray-200">
-                          Time
-                        </th>
-                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-b border-gray-200">
-                          Action
-                        </th>
-                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-b border-gray-200">
-                          Buy Price
-                        </th>
-                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-b border-gray-200">
-                          Sell Price
-                        </th>
-                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-b border-gray-200">
-                          PNL Percent
-                        </th>
-                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-b border-gray-200">
-                          PNL Sum
-                        </th>
-                        <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-b border-gray-200">
-                          Balance
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-gray-100">
-                      {ledgerData.ledger.map((trade) => (
-                        <tr key={trade.id} className="hover:bg-gradient-to-r hover:from-blue-50 hover:to-indigo-50 transition-all duration-200">
-                          <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-900">
-                            #{trade.id}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700 font-medium">
-                            {trade.time}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`inline-flex px-3 py-1 text-xs font-bold rounded-full shadow-sm ${
-                              trade.action === 'buy' ? 'bg-gradient-to-r from-green-100 to-emerald-100 text-green-800 border border-green-200' :
-                              trade.action === 'sell' ? 'bg-gradient-to-r from-red-100 to-pink-100 text-red-800 border border-red-200' :
-                              trade.action === 'take_profit' ? 'bg-gradient-to-r from-blue-100 to-indigo-100 text-blue-800 border border-blue-200' :
-                              trade.action === 'stop_loss' ? 'bg-gradient-to-r from-orange-100 to-yellow-100 text-orange-800 border border-orange-200' :
-                              'bg-gradient-to-r from-gray-100 to-gray-200 text-gray-800 border border-gray-300'
-                            }`}>
-                              {trade.action.toUpperCase()}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
-                            ${parseFloat(trade.buyPrice || 0).toFixed(2)}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
-                            ${parseFloat(trade.sellPrice || 0).toFixed(2)}
-                          </td>
-                          <td className={`px-6 py-4 whitespace-nowrap text-sm font-bold ${
-                            parseFloat(trade.pnlPercent) >= 0 ? 'text-green-600' : 'text-red-600'
-                          }`}>
-                            {parseFloat(trade.pnlPercent) >= 0 ? '+' : ''}{parseFloat(trade.pnlPercent).toFixed(2)}%
-                          </td>
-                          <td className={`px-6 py-4 whitespace-nowrap text-sm font-bold ${
-                            parseFloat(trade.pnlSum) >= 0 ? 'text-green-600' : 'text-red-600'
-                          }`}>
-                            {parseFloat(trade.pnlSum) >= 0 ? '+' : ''}{parseFloat(trade.pnlSum).toFixed(2)}%
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-900">
-                            ${parseFloat(trade.balance).toFixed(2)}
-                          </td>
+                    <thead className="bg-gradient-to-r from-blue-50 via-indigo-50 to-purple-50">
+                      {table.getHeaderGroups().map(headerGroup => (
+                        <tr key={headerGroup.id}>
+                          {headerGroup.headers.map(header => (
+                            <th
+                              key={header.id}
+                              className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider border-b border-gray-200 bg-gradient-to-r from-blue-50 via-indigo-50 to-purple-50"
+                              style={{ width: header.getSize() }}
+                            >
+                              {header.isPlaceholder
+                                ? null
+                                : flexRender(
+                                    header.column.columnDef.header,
+                                    header.getContext()
+                                  )}
+                            </th>
+                          ))}
                         </tr>
                       ))}
-                    </tbody>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-100">
+                        {table.getRowModel().rows.map(row => (
+                          <tr 
+                            key={row.id} 
+                            className="hover:bg-gradient-to-r hover:from-blue-50 hover:to-indigo-50 transition-all duration-300 transform hover:scale-[1.01] hover:shadow-md"
+                          >
+                            {row.getVisibleCells().map(cell => (
+                              <td
+                                key={cell.id}
+                                className="px-6 py-4 whitespace-nowrap text-sm"
+                                style={{ width: cell.column.getSize() }}
+                              >
+                                {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
                   </table>
                 </div>
               </div>
 
-              {/* Professional Pagination */}
-              {ledgerData.pagination && (
-                <div className="flex items-center justify-between mt-8 bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-                  <div className="flex items-center space-x-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (ledgerData.pagination.hasPrevPage) {
-                          setCurrentPage(currentPage - 1);
-                        }
-                      }}
-                      disabled={!ledgerData.pagination.hasPrevPage}
-                      className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-all duration-200 ${
-                        ledgerData.pagination.hasPrevPage
-                          ? 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-300 shadow-sm'
-                          : 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
-                      }`}
-                    >
-                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                      </svg>
-                      Previous
-                    </button>
-                    
-                    <span className="text-sm text-gray-600 px-3">
-                      Page {ledgerData.pagination.currentPage} of {ledgerData.pagination.totalPages}
-                    </span>
-                    
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (ledgerData.pagination.hasNextPage) {
-                          setCurrentPage(currentPage + 1);
-                        }
-                      }}
-                      disabled={!ledgerData.pagination.hasNextPage}
-                      className={`flex items-center px-4 py-2 text-sm font-medium rounded-lg transition-all duration-200 ${
-                        ledgerData.pagination.hasNextPage
-                          ? 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-300 shadow-sm'
-                          : 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
-                      }`}
-                    >
-                      Next
-                      <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                      </svg>
-                    </button>
-                  </div>
+              {/* Enhanced Professional Pagination */}
+              <div className="flex items-center justify-between mt-8 bg-gradient-to-r from-white to-gray-50 rounded-xl shadow-lg border border-gray-200 p-6">
+                <div className="flex items-center space-x-4">
+                  <button
+                    type="button"
+                    onClick={() => table.previousPage()}
+                    disabled={!table.getCanPreviousPage()}
+                    className={`flex items-center px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
+                      table.getCanPreviousPage()
+                        ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-lg hover:shadow-xl hover:scale-105'
+                        : 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
+                    }`}
+                  >
+                    <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                    Previous
+                  </button>
                   
                   {/* Page Numbers */}
-                  <div className="flex items-center space-x-1">
-                    {Array.from({ length: Math.min(5, ledgerData.pagination.totalPages) }, (_, i) => {
-                      const pageNum = i + 1;
-                      return (
-                        <button
-                          key={pageNum}
-                          type="button"
-                          onClick={() => setCurrentPage(pageNum)}
-                          className={`px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 ${
-                            pageNum === ledgerData.pagination.currentPage
-                              ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-lg'
-                              : 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-300 shadow-sm'
-                          }`}
-                        >
-                          {pageNum}
-                        </button>
-                      );
+                  <div className="flex items-center space-x-2">
+                    {/* First page */}
+                    <button
+                      type="button"
+                      onClick={() => table.setPageIndex(0)}
+                      className={`px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 ${
+                        1 === table.getState().pagination.pageIndex + 1
+                          ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-lg'
+                          : 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-300 shadow-sm hover:shadow-md'
+                      }`}
+                    >
+                      1
+                    </button>
+                    
+                    {/* Middle pages */}
+                    {Array.from({ length: Math.min(3, table.getPageCount() - 2) }, (_, i) => {
+                      const pageNum = i + 2;
+                      const currentPage = table.getState().pagination.pageIndex + 1;
+                      
+                      if (pageNum <= table.getPageCount() - 1) {
+                        return (
+                          <button
+                            key={pageNum}
+                            type="button"
+                            onClick={() => table.setPageIndex(pageNum - 1)}
+                            className={`px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 ${
+                              pageNum === currentPage
+                                ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-lg'
+                                : 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-300 shadow-sm hover:shadow-md'
+                            }`}
+                          >
+                            {pageNum}
+                          </button>
+                        );
+                      }
+                      return null;
                     })}
                     
-                    {ledgerData.pagination.totalPages > 5 && (
-                      <>
-                        <span className="px-2 text-gray-500">...</span>
-                        <button
-                          type="button"
-                          onClick={() => setCurrentPage(ledgerData.pagination.totalPages)}
-                          className="px-3 py-2 text-sm font-medium bg-white text-gray-700 hover:bg-gray-50 border border-gray-300 shadow-sm rounded-lg transition-all duration-200"
-                        >
-                          {ledgerData.pagination.totalPages}
-                        </button>
-                      </>
+                    {/* Ellipsis if there are more pages */}
+                    {table.getPageCount() > 4 && (
+                      <span className="px-2 text-gray-500">...</span>
+                    )}
+                    
+                    {/* Last page */}
+                    {table.getPageCount() > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => table.setPageIndex(table.getPageCount() - 1)}
+                        className={`px-3 py-2 text-sm font-medium rounded-lg transition-all duration-200 ${
+                          table.getPageCount() === table.getState().pagination.pageIndex + 1
+                            ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-lg'
+                            : 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-300 shadow-sm hover:shadow-md'
+                        }`}
+                      >
+                        {table.getPageCount()}
+                      </button>
                     )}
                   </div>
+                  
+                  <button
+                    type="button"
+                    onClick={() => table.nextPage()}
+                    disabled={!table.getCanNextPage()}
+                    className={`flex items-center px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 ${
+                      table.getCanNextPage()
+                        ? 'bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-lg hover:shadow-xl hover:scale-105'
+                        : 'bg-gray-100 text-gray-400 cursor-not-allowed border border-gray-200'
+                    }`}
+                  >
+                    Next
+                    <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
                 </div>
-              )}
+                
+                {/* Page Info */}
+                <div className="flex items-center space-x-2 bg-white rounded-lg px-4 py-2 shadow-sm border border-gray-200">
+                  <span className="text-sm font-medium text-gray-600">Page</span>
+                  <span className="text-lg font-bold text-blue-600">{table.getState().pagination.pageIndex + 1}</span>
+                  <span className="text-sm text-gray-600">of</span>
+                  <span className="text-lg font-bold text-gray-900">{table.getPageCount()}</span>
+                </div>
+              </div>
             </>
           ) : (
             <div className="text-center py-16">
