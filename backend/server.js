@@ -720,7 +720,7 @@ app.get('/api/strategies/:id/ledger', async (req, res) => {
     // Get paginated data - using only available columns
     const dataQuery = `
       SELECT 
-        ROW_NUMBER() OVER (ORDER BY datetime) as id,
+        ROW_NUMBER() OVER (ORDER BY datetime DESC) as id,
         datetime,
         action,
         buy_price,
@@ -730,7 +730,7 @@ app.get('/api/strategies/:id/ledger', async (req, res) => {
         balance
       FROM strategies_backtest.${strategyName}_backtest
       WHERE action IS NOT NULL AND action != 'hold'
-      ORDER BY datetime ASC
+      ORDER BY datetime DESC
       LIMIT $1 OFFSET $2
     `;
     

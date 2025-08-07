@@ -311,85 +311,102 @@ function StrategyDetail({ strategyName, onBack }) {
         {/* Top Section: Single Horizontal Card */}
         <div className="bg-white rounded-xl shadow-lg p-6 mb-8 flex flex-col lg:flex-row gap-6 items-stretch">
           {/* Left: Strategy Info */}
-          <div className="flex flex-col justify-between min-w-[200px] max-w-[220px] flex-shrink-0 border-r border-gray-100 pr-6">
-            <div className="flex items-center gap-3 mb-2">
+          <div className="flex flex-col min-w-[200px] max-w-[250px] flex-shrink-0 border-r border-gray-100 pr-6">
+            <div className="mb-4">
+              <div className="flex items-center gap-3 mb-3">
               <div className="w-3 h-3 bg-green-500 rounded-full"></div>
-              <h2 className="text-xl font-bold text-gray-900">{strategy.name}</h2>
+                <h2 className="text-2xl font-bold text-gray-900">{strategy.name}</h2>
+              </div>
+              <div className="flex flex-wrap gap-1 ml-6">
+                <div className="flex items-center space-x-1 bg-gray-50 rounded px-1.5 py-0.5 border border-gray-200">
+                  <svg className="w-2.5 h-2.5 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span className="text-xs text-gray-600">{strategy.parameters.general.time_horizon}</span>
+                </div>
+                <div className="flex items-center space-x-1 bg-gray-50 rounded px-1.5 py-0.5 border border-gray-200">
+                  <svg className="w-3 h-3 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
+                  </svg>
+                  <span className="text-xs text-gray-600">{strategy.parameters.general.symbol}</span>
+                </div>
+                <div className="flex items-center space-x-1 bg-gray-50 rounded px-1.5 py-0.5 border border-gray-200">
+                  <svg className="w-2.5 h-2.5 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+                  </svg>
+                  <span className="text-xs text-gray-600">{strategy.parameters.general.data_exchange}</span>
+                </div>
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2 mb-4">
-              <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-medium">
-                {strategy.parameters.general.symbol?.toUpperCase()}
-              </span>
-              <span className="bg-purple-100 text-purple-800 px-3 py-1 rounded-full text-sm font-medium">
-                {strategy.parameters.general.time_horizon}
-              </span>
-              <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-medium">
-                {strategy.parameters.general.data_exchange?.toUpperCase()}
-              </span>
+            
+            <div className="flex gap-2 mb-4 ml-6">
               {strategy.parameters.live.take_profit && (
-                <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-medium">
-                  TP: {(strategy.parameters.live.take_profit * 100).toFixed(2)}%
-                </span>
+                <div className="flex items-center space-x-1 bg-gray-50 rounded px-2 py-1 border border-gray-200 flex-1">
+                  <span className="text-xs text-gray-500">TP</span>
+                  <span className="text-xs font-semibold text-green-600">{(strategy.parameters.live.take_profit * 100).toFixed(2)}%</span>
+                </div>
               )}
               {strategy.parameters.live.stop_loss && (
-                <span className="bg-red-100 text-red-800 px-3 py-1 rounded-full text-sm font-medium">
-                  SL: {(strategy.parameters.live.stop_loss * 100).toFixed(2)}%
-                </span>
+                <div className="flex items-center space-x-1 bg-gray-50 rounded px-2 py-1 border border-gray-200 flex-1">
+                  <span className="text-xs text-gray-500">SL</span>
+                  <span className="text-xs font-semibold text-red-600">{(strategy.parameters.live.stop_loss * 100).toFixed(2)}%</span>
+                </div>
               )}
             </div>
-            <div className="flex flex-col gap-2">
-              <div className="flex justify-between items-center bg-gradient-to-r from-green-50 to-green-100 rounded-lg px-3 py-2">
-                <span className="text-xs font-medium text-gray-700">Total Return</span>
-                <span className="text-lg font-bold text-green-600">{strategy.performance.totalReturn.toFixed(2)}%</span>
+            
+            <div className="space-y-2 ml-6">
+              <div className="flex justify-between items-center bg-white rounded px-3 py-2 border border-gray-200 shadow-sm">
+                <span className="text-xs text-gray-600">Total Return</span>
+                <span className="text-xs font-bold text-green-600">{strategy.performance.totalReturn.toFixed(2)}%</span>
               </div>
-              <div className="flex justify-between items-center bg-gradient-to-r from-blue-50 to-blue-100 rounded-lg px-3 py-2">
-                <span className="text-xs font-medium text-gray-700">Total Trades</span>
-                <span className="text-lg font-bold text-blue-600">{strategy.performance.totalTrades}</span>
+              <div className="flex justify-between items-center bg-white rounded px-3 py-2 border border-gray-200 shadow-sm">
+                <span className="text-xs text-gray-600">Total Trades</span>
+                <span className="text-xs font-bold text-blue-600">{strategy.performance.totalTrades}</span>
               </div>
             </div>
           </div>
 
-          {/* Center: Historical Performance */}
+          {/* Center: Current Status */}
           <div className="flex-1 flex flex-col justify-center items-center px-4 border-r border-gray-100">
-            <h3 className="text-sm font-semibold text-gray-900 mb-2 text-center">Historical Performance</h3>
+            <h3 className="text-sm font-semibold text-gray-900 mb-2 text-center">Current Status</h3>
             <div className="grid grid-cols-3 gap-3 w-full max-w-md">
-              {Object.entries(strategy.performance.historicalReturns).map(([period, value]) => (
-                <div key={period} className="bg-gray-50 rounded-lg p-3 text-center border border-gray-200">
-                  <div className="text-xs text-gray-500 mb-1">{period} Return</div>
-                  <div className={`text-base font-bold ${getPerformanceColor(value)}`}>{value.toFixed(2)}%</div>
+              <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-200">
+                <div className="text-xs text-gray-500 mb-1">Entry Price</div>
+                <div className="text-base font-semibold text-gray-900">${parseFloat(strategy.performance.entryPrice).toFixed(2)}</div>
                 </div>
-              ))}
+              <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-200">
+                <div className="text-xs text-gray-500 mb-1">Current Price</div>
+                <div className="text-base font-semibold text-gray-900">${parseFloat(strategy.performance.currentPrice).toFixed(2)}</div>
             </div>
+              <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-200">
+                <div className="text-xs text-gray-500 mb-1">Current PNL</div>
+                <div className={`text-base font-semibold ${getPerformanceColor(strategy.performance.currentPnl)}`}>{parseFloat(strategy.performance.currentPnl).toFixed(2)}%</div>
           </div>
-
-          {/* Right: Forecast & Trade Info */}
-          <div className="flex flex-col justify-between min-w-[220px] max-w-[260px] flex-shrink-0 pl-6">
-            <h3 className="text-sm font-semibold text-gray-900 mb-2">Current Status</h3>
-            <div className="grid grid-cols-2 gap-2 mb-2">
-              <div className="bg-gray-50 rounded-lg p-3">
+              <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-200">
                 <div className="text-xs text-gray-500 mb-1">Forecast</div>
-                <div className="text-base font-semibold text-gray-900">{strategy.forecast.forecast}</div>
+                <div className="text-base font-semibold text-gray-900">{strategy.forecast.forecast || '-'}</div>
               </div>
-              <div className="bg-gray-50 rounded-lg p-3">
-                <div className="text-xs text-gray-500 mb-1">Forecast Time</div>
-                <div className="text-base font-semibold text-gray-900">{strategy.forecast.forecastTime}</div>
-              </div>
-              <div className="bg-gray-50 rounded-lg p-3">
+              <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-200">
                 <div className="text-xs text-gray-500 mb-1">Next Forecast</div>
                 <div className="text-base font-semibold text-gray-900">{strategy.forecast.nextForecast}</div>
               </div>
-              <div className="bg-gray-50 rounded-lg p-3">
-                <div className="text-xs text-gray-500 mb-1">Entry Price</div>
-                <div className="text-base font-semibold text-gray-900">{parseFloat(strategy.performance.entryPrice).toFixed(2)}</div>
+              <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-200">
+                <div className="text-xs text-gray-500 mb-1">Forecast Time</div>
+                <div className="text-base font-semibold text-gray-900">{strategy.forecast.forecastTime || '-'}</div>
               </div>
-              <div className="bg-gray-50 rounded-lg p-3">
-                <div className="text-xs text-gray-500 mb-1">Current Price</div>
-                <div className="text-base font-semibold text-gray-900">{parseFloat(strategy.performance.currentPrice).toFixed(2)}</div>
-              </div>
-              <div className="bg-gray-50 rounded-lg p-3">
-                <div className="text-xs text-gray-500 mb-1">Current PNL</div>
-                <div className={`text-base font-semibold ${getPerformanceColor(strategy.performance.currentPnl)}`}>{parseFloat(strategy.performance.currentPnl).toFixed(2)}%</div>
-              </div>
+            </div>
+          </div>
+
+          {/* Right: Historical Performance */}
+          <div className="flex flex-col justify-between min-w-[220px] max-w-[260px] flex-shrink-0 pl-6">
+            <h3 className="text-sm font-semibold text-gray-900 mb-2">Historical Performance</h3>
+            <div className="grid grid-cols-3 gap-2 mb-2">
+              {Object.entries(strategy.performance.historicalReturns).map(([period, value]) => (
+                <div key={period} className="bg-gray-50 rounded-lg p-3 text-center border border-gray-200">
+                  <div className="text-xs text-gray-500 mb-1">{period}</div>
+                  <div className={`text-base font-semibold ${getPerformanceColor(value)}`}>{value.toFixed(2)}%</div>
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -416,10 +433,10 @@ function StrategyDetail({ strategyName, onBack }) {
               <div className="space-y-2 text-xs">
                 {Object.entries(strategy.parameters.filters).map(([key, value]) => (
                   key !== 'percent_required' ? (
-                    <div key={key} className="flex justify-between">
-                      <span className="text-gray-600">{key}</span>
-                      <span className="font-medium text-gray-900">{String(value)}</span>
-                    </div>
+                  <div key={key} className="flex justify-between">
+                    <span className="text-gray-600">{key}</span>
+                    <span className="font-medium text-gray-900">{String(value)}</span>
+                  </div>
                   ) : null
                 ))}
                 {'percent_required' in strategy.parameters.filters && (
@@ -472,7 +489,7 @@ function StrategyDetail({ strategyName, onBack }) {
                   }
                   
                   return (
-                    <div key={key} className="flex justify-between">
+                  <div key={key} className="flex justify-between">
                       <span className="text-gray-600">{key.replace(/_/g, ' ')}</span>
                       <span className="font-medium text-gray-900">{displayValue}</span>
                     </div>
@@ -630,8 +647,8 @@ function StrategyDetail({ strategyName, onBack }) {
                     <BarChart 
                       data={winLossData?.individualPnl?.map((pnl, index) => ({ 
                         index, 
-                        pnl, 
-                        color: pnl > 0 ? '#10b981' : pnl < 0 ? '#ef4444' : '#6b7280' 
+                        pnl: pnl,
+                        tradeNumber: index + 1
                       })) || []}
                       margin={{ top: 10, right: 20, left: 10, bottom: 10 }}
                       className="focus:outline-none"
@@ -663,8 +680,20 @@ function StrategyDetail({ strategyName, onBack }) {
                       />
                       <Bar 
                         dataKey="pnl" 
-                        fill={(entry) => entry.color}
+                        fill={(entry) => {
+                          const pnl = entry.pnl;
+                          if (pnl > 0) return '#10b981';
+                          if (pnl < 0) return '#ef4444';
+                          return '#6b7280';
+                        }}
                         radius={[3, 3, 0, 0]}
+                        stroke={(entry) => {
+                          const pnl = entry.pnl;
+                          if (pnl > 0) return '#059669';
+                          if (pnl < 0) return '#dc2626';
+                          return '#4b5563';
+                        }}
+                        strokeWidth={1}
                       />
                     </BarChart>
                   </ResponsiveContainer>
@@ -678,10 +707,21 @@ function StrategyDetail({ strategyName, onBack }) {
                   <div className="w-full max-w-xs mb-2 focus:outline-none" tabIndex="-1" style={{ outline: 'none' }}>
                     <ResponsiveContainer width="100%" height={220} className="focus:outline-none" style={{ outline: 'none' }}>
                       <PieChart className="focus:outline-none" style={{ outline: 'none' }}>
+                        <defs>
+                          <linearGradient id="winGradient" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#10b981" stopOpacity={0.8}/>
+                            <stop offset="100%" stopColor="#059669" stopOpacity={0.6}/>
+                          </linearGradient>
+                          <linearGradient id="lossGradient" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#ef4444" stopOpacity={0.8}/>
+                            <stop offset="100%" stopColor="#dc2626" stopOpacity={0.6}/>
+                          </linearGradient>
+                        </defs>
+                        
                         <Pie
                           data={[
-                            { name: 'Wins', value: winLossData?.wins?.percentage || 0, color: '#10b981' },
-                            { name: 'Losses', value: winLossData?.losses?.percentage || 0, color: '#ef4444' }
+                            { name: 'Wins', value: winLossData?.wins?.percentage || 0, color: 'url(#winGradient)', strokeColor: '#10b981' },
+                            { name: 'Losses', value: winLossData?.losses?.percentage || 0, color: 'url(#lossGradient)', strokeColor: '#ef4444' }
                           ]}
                           cx="50%"
                           cy="50%"
@@ -689,12 +729,14 @@ function StrategyDetail({ strategyName, onBack }) {
                           outerRadius={90}
                           paddingAngle={8}
                           dataKey="value"
+                          stroke="#ffffff"
+                          strokeWidth={2}
                         >
                           {[
-                            { name: 'Wins', value: winLossData?.wins?.percentage || 0, color: '#10b981' },
-                            { name: 'Losses', value: winLossData?.losses?.percentage || 0, color: '#ef4444' }
+                            { name: 'Wins', value: winLossData?.wins?.percentage || 0, color: 'url(#winGradient)', strokeColor: '#10b981' },
+                            { name: 'Losses', value: winLossData?.losses?.percentage || 0, color: 'url(#lossGradient)', strokeColor: '#ef4444' }
                           ].map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={entry.color} />
+                            <Cell key={`cell-${index}`} fill={entry.color} stroke={entry.strokeColor} />
                           ))}
                         </Pie>
                         <Tooltip 
@@ -1054,7 +1096,7 @@ function StrategyDetail({ strategyName, onBack }) {
                 <div className="flex justify-between">
                   <span className="text-gray-600">Kurtosis</span>
                   <span className="font-medium text-gray-900">{parseFloat(metricsData?.statistical?.kurtosis || 0).toFixed(2)}</span>
-                </div>
+                  </div>
               </div>
             </div>
 
@@ -1085,7 +1127,7 @@ function StrategyDetail({ strategyName, onBack }) {
                 <div className="flex justify-between">
                   <span className="text-gray-600">Negative Months (%)</span>
                   <span className="font-medium text-gray-900">{parseFloat(metricsData?.monthlyWeekly?.negativeMonthsPercent || 0).toFixed(2)}%</span>
-                </div>
+                  </div>
               </div>
             </div>
           </div>
