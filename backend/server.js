@@ -720,7 +720,7 @@ app.get('/api/strategies/:id/ledger', async (req, res) => {
     // Get paginated data - using only available columns
     const dataQuery = `
       SELECT 
-        ROW_NUMBER() OVER (ORDER BY datetime DESC) as id,
+        ROW_NUMBER() OVER (ORDER BY datetime) as id,
         datetime,
         action,
         buy_price,
@@ -730,7 +730,7 @@ app.get('/api/strategies/:id/ledger', async (req, res) => {
         balance
       FROM strategies_backtest.${strategyName}_backtest
       WHERE action IS NOT NULL AND action != 'hold'
-      ORDER BY datetime DESC
+      ORDER BY datetime ASC
       LIMIT $1 OFFSET $2
     `;
     
@@ -771,6 +771,225 @@ app.get('/api/strategies/:id/ledger', async (req, res) => {
   } catch (error) {
     console.error('Error fetching ledger data:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch ledger data', message: error.message });
+  }
+});
+
+// Add user management endpoints
+app.get('/api/users', async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        id,
+        name,
+        email,
+        strategies,
+        created_at,
+        updated_at
+      FROM users.users 
+      ORDER BY created_at DESC
+    `;
+    
+    const result = await pool.query(query);
+    
+    res.json({
+      success: true,
+      data: result.rows,
+      count: result.rows.length,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Database error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch users from database',
+      message: error.message
+    });
+  }
+});
+
+app.post('/api/users', async (req, res) => {
+  try {
+    const { name, email, password, api_key, api_secret, strategies } = req.body;
+    
+    // Validate required fields
+    if (!name || !email || !password || !api_key || !api_secret || !strategies) {
+      return res.status(400).json({
+        success: false,
+        error: 'All fields are required'
+      });
+    }
+    
+    // Check if email already exists
+    const existingUser = await pool.query('SELECT id FROM users.users WHERE email = $1', [email]);
+    if (existingUser.rows.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'User with this email already exists'
+      });
+    }
+    
+    // Hash password (in production, use bcrypt)
+    const hashedPassword = password; // For now, store as plain text
+    
+    const query = `
+      INSERT INTO users.users (name, email, password, api_key, api_secret, strategies)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id, name, email, strategies, created_at
+    `;
+    
+    const result = await pool.query(query, [
+      name, 
+      email, 
+      hashedPassword, 
+      api_key, 
+      api_secret, 
+      JSON.stringify(strategies)
+    ]);
+    
+    res.json({
+      success: true,
+      data: result.rows[0],
+      message: 'User created successfully'
+    });
+  } catch (error) {
+    console.error('Database error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create user',
+      message: error.message
+    });
+  }
+});
+
+app.put('/api/users/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, email, password, api_key, api_secret, strategies } = req.body;
+    
+    // Validate required fields
+    if (!name || !email || !api_key || !api_secret || !strategies) {
+      return res.status(400).json({
+        success: false,
+        error: 'All fields are required'
+      });
+    }
+    
+    // Check if email already exists for other users
+    const existingUser = await pool.query(
+      'SELECT id FROM users.users WHERE email = $1 AND id != $2', 
+      [email, id]
+    );
+    if (existingUser.rows.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'User with this email already exists'
+      });
+    }
+    
+    let query, params;
+    
+    if (password) {
+      // Update with password
+      query = `
+        UPDATE users.users 
+        SET name = $1, email = $2, password = $3, api_key = $4, api_secret = $5, strategies = $6, updated_at = NOW()
+        WHERE id = $7
+        RETURNING id, name, email, strategies, updated_at
+      `;
+      params = [name, email, password, api_key, api_secret, JSON.stringify(strategies), id];
+    } else {
+      // Update without password
+      query = `
+        UPDATE users.users 
+        SET name = $1, email = $2, api_key = $3, api_secret = $4, strategies = $5, updated_at = NOW()
+        WHERE id = $6
+        RETURNING id, name, email, strategies, updated_at
+      `;
+      params = [name, email, api_key, api_secret, JSON.stringify(strategies), id];
+    }
+    
+    const result = await pool.query(query, params);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: result.rows[0],
+      message: 'User updated successfully'
+    });
+  } catch (error) {
+    console.error('Database error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update user',
+      message: error.message
+    });
+  }
+});
+
+app.delete('/api/users/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const query = 'DELETE FROM users.users WHERE id = $1 RETURNING id';
+    const result = await pool.query(query, [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'User deleted successfully'
+    });
+  } catch (error) {
+    console.error('Database error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete user',
+      message: error.message
+    });
+  }
+});
+
+app.get('/api/users/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const query = `
+      SELECT id, name, email, api_key, api_secret, strategies, created_at, updated_at
+      FROM users.users 
+      WHERE id = $1
+    `;
+    
+    const result = await pool.query(query, [id]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Database error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch user',
+      message: error.message
+    });
   }
 });
 

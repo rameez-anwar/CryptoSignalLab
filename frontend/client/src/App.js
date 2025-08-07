@@ -3,6 +3,7 @@ import axios from 'axios';
 import { BrowserRouter as Router, Routes, Route, useNavigate, useParams } from 'react-router-dom';
 import { TrendingUp, TrendingDown, Activity, AlertCircle, BarChart3, Search, Filter, Users, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import StrategyDetail from './StrategyDetail';
+import UserManagement from './UserManagement';
 import './App.css';
 
 // Strategy List Component
@@ -500,25 +501,7 @@ function StrategyList() {
   };
 
   const renderUserManagementContent = () => {
-    return (
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="bg-white rounded-lg shadow-sm border">
-          <div className="px-6 py-4 border-b border-gray-200">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-xl font-semibold text-gray-900">User Management</h2>
-                <p className="text-gray-600 mt-1">Manage user accounts and permissions</p>
-              </div>
-            </div>
-          </div>
-          <div className="p-12 text-center">
-            <Users className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">User Management</h3>
-            <p className="text-gray-500">This section is under development.</p>
-          </div>
-        </div>
-      </main>
-    );
+    return <UserManagement />;
   };
 
   return (
