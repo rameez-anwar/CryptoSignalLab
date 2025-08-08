@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { BrowserRouter as Router, Routes, Route, useNavigate, useParams } from 'react-router-dom';
-import { TrendingUp, TrendingDown, Activity, AlertCircle, BarChart3, Search, Filter, Users, ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { TrendingUp, TrendingDown, AlertCircle, BarChart3, Search, Filter, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import StrategyDetail from './StrategyDetail';
 import UserManagement from './UserManagement';
 import './App.css';
@@ -72,18 +72,6 @@ function StrategyList() {
       currency: 'USD',
       minimumFractionDigits: 2
     }).format(amount);
-  };
-
-  const getStatusColor = (status) => {
-    return status === 'Active' ? 'text-green-600' : 'text-red-600';
-  };
-
-  const getStatusIcon = (status) => {
-    return status === 'Active' ? <Activity className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />;
-  };
-
-  const getPerformanceColor = (value) => {
-    return value >= 0 ? 'text-green-600' : 'text-red-600';
   };
 
   const getUniqueExchanges = () => {

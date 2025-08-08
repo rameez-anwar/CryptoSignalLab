@@ -60,12 +60,6 @@ function UserManagement() {
     };
   }, []);
 
-  // Fetch users and strategies
-  useEffect(() => {
-    fetchUsers();
-    fetchStrategies();
-  }, []);
-
   const fetchUsers = useCallback(async () => {
     try {
       setLoading(true);
@@ -91,6 +85,12 @@ function UserManagement() {
       console.error('Error fetching strategies:', err);
     }
   }, []);
+
+  // Fetch users and strategies
+  useEffect(() => {
+    fetchUsers();
+    fetchStrategies();
+  }, [fetchUsers, fetchStrategies]);
 
   const resetFormFields = useCallback(() => {
     setName('');
@@ -206,16 +206,6 @@ function UserManagement() {
       return [];
     }
   };
-
-  const handleStrategyChange = useCallback((strategyName, checked) => {
-    setSelectedStrategies(prev => {
-      if (checked) {
-        return [...prev, strategyName];
-      } else {
-        return prev.filter(s => s !== strategyName);
-      }
-    });
-  }, []);
 
   const handleStrategySelect = useCallback((strategyName) => {
     setSelectedStrategies(prev => {

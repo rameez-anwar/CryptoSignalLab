@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
-import { ArrowLeft, TrendingUp, TrendingDown, BarChart3, AlertCircle } from 'lucide-react';
+import { ArrowLeft, BarChart3, AlertCircle } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, BarChart, Bar } from 'recharts';
 import {
   useReactTable,
@@ -20,10 +20,7 @@ function StrategyDetail({ strategyName, onBack }) {
   const [metricsData, setMetricsData] = useState(null);
   const [ledgerData, setLedgerData] = useState(null);
   const [ledgerLoading, setLedgerLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
-  const [totalItems, setTotalItems] = useState(0);
-  const [totalPages, setTotalPages] = useState(0);
 
   // TanStack Table column helper
   const columnHelper = createColumnHelper();
@@ -109,7 +106,7 @@ function StrategyDetail({ strategyName, onBack }) {
         size: 120,
       }),
     ],
-    []
+    [columnHelper]
   );
 
   const fetchStrategyDetails = useCallback(async () => {
@@ -179,18 +176,14 @@ function StrategyDetail({ strategyName, onBack }) {
       console.log('Ledger response:', response.data);
       if (response.data.success) {
         setLedgerData(response.data.data.ledger || []);
-        setTotalItems(response.data.data.ledger?.length || 0);
-        setTotalPages(Math.ceil((response.data.data.ledger?.length || 0) / itemsPerPage));
       }
     } catch (err) {
       console.error('Error fetching ledger data:', err);
       setLedgerData([]);
-      setTotalItems(0);
-      setTotalPages(0);
     } finally {
       setLedgerLoading(false);
     }
-  }, [strategyName, itemsPerPage]);
+  }, [strategyName]);
 
   // TanStack Table instance
   const table = useReactTable({
@@ -453,7 +446,7 @@ function StrategyDetail({ strategyName, onBack }) {
               <div className="space-y-2 text-xs">
                 {Object.entries(strategy.parameters.patterns).map(([key, value]) => (
                   <div key={key} className="flex justify-between">
-                    <span className="text-gray-600">{key}</span>
+                    <span className="text-gray-600">{key.replace(/_/g, ' ')}</span>
                     <span className="font-medium text-gray-900">{String(value)}</span>
                   </div>
                 ))}

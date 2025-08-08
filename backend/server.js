@@ -280,6 +280,16 @@ app.get('/api/strategies/:id/details', async (req, res) => {
       patterns_tie_breaker: row.patterns_tie_breaker
     };
     
+    // Add all pattern recognition columns from database
+    const patternList = ['cdldoji', 'cdlhammer', 'cdlengulfing', 'cdlmorningstar', 'cdleveningstar', 'cdlshootingstar', 'cdlhangingman', 'cdldarkcloudcover', 'cdlpiercing', 'cdl3whitesoldiers', 'cdl3blackcrows'];
+    
+    // Add pattern recognition columns to patterns object
+    patternList.forEach(pattern => {
+      if (row.hasOwnProperty(pattern)) {
+        patterns[pattern] = !!row[pattern];
+      }
+    });
+    
     // Dynamically create indicator cards based on enabled indicators
     const indicators = {};
     
