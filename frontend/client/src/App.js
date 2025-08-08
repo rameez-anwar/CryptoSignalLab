@@ -220,19 +220,19 @@ function StrategyList() {
 
   const summaryStats = getSummaryStats();
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
+    if (loading) {
+      return (
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+          <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-2 border-gray-300 border-t-blue-600 mx-auto"></div>
           <p className="mt-4 text-gray-600 font-medium">Loading strategies...</p>
           <p className="text-sm text-gray-500 mt-2">Preparing your dashboard</p>
+          </div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
 
-  return (
+    return (
     <div className="min-h-screen bg-gray-50">
       <Header activePage="simulator" />
 
@@ -476,7 +476,7 @@ function StrategyList() {
                   >
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div>
-                        <div className="text-sm font-semibold text-gray-900">{strategy.name}</div>
+                      <div className="text-sm font-semibold text-gray-900">{strategy.name}</div>
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
@@ -523,7 +523,7 @@ function StrategyList() {
                           strategy.status === 'Active' ? 'bg-green-500' : 'bg-red-500'
                         }`}></div>
                         {strategy.status}
-                      </span>
+                            </span>
                     </td>
                   </tr>
                 ))}

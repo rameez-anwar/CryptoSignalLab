@@ -1,7 +1,7 @@
 import pandas as pd
 
 class Backtester:
-    def __init__(self, ohlcv_df, signals_df, tp=0.05, sl=0.03, initial_balance=1000, fee_percent=0.0005):
+    def __init__(self, ohlcv_df, signals_df, tp=0.09, sl=0.01, initial_balance=1000, fee_percent=0.0005):
         self.ohlcv = ohlcv_df.copy()
         self.signals = signals_df.copy()
         self.tp = tp

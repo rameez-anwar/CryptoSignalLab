@@ -131,7 +131,15 @@ function StrategyDetail({ strategyName, onBack }) {
       const response = await axios.get(`/api/strategies/${strategyName}/pnl_timeseries`);
       console.log('PNL response:', response.data);
       if (response.data.success) {
-        setPnlSeries(response.data.data);
+        // Process the data to create separate positive and negative datasets
+        const processedData = response.data.data.map(item => ({
+          ...item,
+          positivePnl: item.pnl >= 0 ? item.pnl : null,
+          negativePnl: item.pnl < 0 ? item.pnl : null,
+          // Create a continuous line for the base
+          continuousPnl: item.pnl
+        }));
+        setPnlSeries(processedData);
       }
     } catch (err) {
       console.error('Error fetching PNL data:', err);
@@ -312,8 +320,8 @@ function StrategyDetail({ strategyName, onBack }) {
 
         {/* Top Section: Single Horizontal Card */}
         <div className="bg-white rounded-xl shadow-lg p-6 mb-8 flex flex-col lg:flex-row gap-6 items-stretch">
-          {/* Left: Strategy Info */}
-          <div className="flex flex-col min-w-[200px] max-w-[250px] flex-shrink-0 border-r border-gray-100 pr-6">
+          {/* Left: Strategy Info - 25% */}
+          <div className="flex flex-col w-1/4 flex-shrink-0 border-r border-gray-100 pr-6">
             <div className="mb-4">
               <div className="flex items-center gap-3 mb-3">
               <div className="w-3 h-3 bg-green-500 rounded-full"></div>
@@ -341,72 +349,88 @@ function StrategyDetail({ strategyName, onBack }) {
               </div>
             </div>
             
-            <div className="flex gap-2 mb-4 ml-6">
+            <div className="flex gap-1 mb-4 ml-6">
               {strategy.parameters.live.take_profit && (
-                <div className="flex items-center space-x-1 bg-gray-50 rounded px-2 py-1 border border-gray-200 flex-1">
+                <div className="flex items-center space-x-1 bg-gray-50 rounded px-1.5 py-0.5 border border-gray-200 max-w-25">
                   <span className="text-xs text-gray-500">TP</span>
                   <span className="text-xs font-semibold text-green-600">{(strategy.parameters.live.take_profit * 100).toFixed(2)}%</span>
                 </div>
               )}
               {strategy.parameters.live.stop_loss && (
-                <div className="flex items-center space-x-1 bg-gray-50 rounded px-2 py-1 border border-gray-200 flex-1">
+                <div className="flex items-center space-x-1 bg-gray-50 rounded px-1.5 py-0.5 border border-gray-200 max-w-25">
                   <span className="text-xs text-gray-500">SL</span>
                   <span className="text-xs font-semibold text-red-600">{(strategy.parameters.live.stop_loss * 100).toFixed(2)}%</span>
                 </div>
               )}
             </div>
             
-            <div className="space-y-2 ml-6">
-              <div className="flex justify-between items-center bg-white rounded px-3 py-2 border border-gray-200 shadow-sm">
+            <div className="space-y-1 ml-6">
+              <div className="flex justify-between items-center bg-white rounded px-2 py-1 border border-gray-200 shadow-sm max-w-48">
                 <span className="text-xs text-gray-600">Total Return</span>
                 <span className="text-xs font-bold text-green-600">{strategy.performance.totalReturn.toFixed(2)}%</span>
               </div>
-              <div className="flex justify-between items-center bg-white rounded px-3 py-2 border border-gray-200 shadow-sm">
+              <div className="flex justify-between items-center bg-white rounded px-2 py-1 border border-gray-200 shadow-sm max-w-48">
                 <span className="text-xs text-gray-600">Total Trades</span>
                 <span className="text-xs font-bold text-blue-600">{strategy.performance.totalTrades}</span>
               </div>
             </div>
           </div>
 
-          {/* Center: Current Status */}
-          <div className="flex-1 flex flex-col justify-center items-center px-4 border-r border-gray-100">
+          {/* Center: Current Status - 50% */}
+          <div className="flex flex-col justify-start items-center w-1/2 px-4 border-r border-gray-100">
             <h3 className="text-sm font-semibold text-gray-900 mb-2 text-center">Current Status</h3>
             <div className="grid grid-cols-3 gap-3 w-full max-w-md">
               <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-200">
                 <div className="text-xs text-gray-500 mb-1">Entry Price</div>
-                <div className="text-base font-semibold text-gray-900">${parseFloat(strategy.performance.entryPrice).toFixed(2)}</div>
-                </div>
+                <div className="text-sm font-semibold text-gray-900">${parseFloat(strategy.performance.entryPrice).toFixed(2)}</div>
+              </div>
               <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-200">
                 <div className="text-xs text-gray-500 mb-1">Current Price</div>
-                <div className="text-base font-semibold text-gray-900">${parseFloat(strategy.performance.currentPrice).toFixed(2)}</div>
-            </div>
+                <div className="text-sm font-semibold text-gray-900">${parseFloat(strategy.performance.currentPrice).toFixed(2)}</div>
+              </div>
               <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-200">
                 <div className="text-xs text-gray-500 mb-1">Current PNL</div>
-                <div className={`text-base font-semibold ${getPerformanceColor(strategy.performance.currentPnl)}`}>{parseFloat(strategy.performance.currentPnl).toFixed(2)}%</div>
-          </div>
+                <div className={`text-sm font-semibold ${getPerformanceColor(strategy.performance.currentPnl)}`}>{parseFloat(strategy.performance.currentPnl).toFixed(2)}%</div>
+              </div>
               <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-200">
                 <div className="text-xs text-gray-500 mb-1">Forecast</div>
-                <div className="text-base font-semibold text-gray-900">{strategy.forecast.forecast || '-'}</div>
+                <div className="text-sm font-semibold text-gray-900">{strategy.forecast.forecast || '-'}</div>
               </div>
               <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-200">
                 <div className="text-xs text-gray-500 mb-1">Next Forecast</div>
-                <div className="text-base font-semibold text-gray-900">{strategy.forecast.nextForecast}</div>
+                <div className="text-sm font-semibold text-gray-900">
+                  {strategy.forecast.nextForecast ? 
+                    new Date(strategy.forecast.nextForecast).toLocaleDateString('en-US', { 
+                      day: '2-digit', 
+                      month: 'short', 
+                      year: 'numeric' 
+                    }) : '-'
+                  }
+                </div>
               </div>
               <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-200">
                 <div className="text-xs text-gray-500 mb-1">Forecast Time</div>
-                <div className="text-base font-semibold text-gray-900">{strategy.forecast.forecastTime || '-'}</div>
+                <div className="text-sm font-semibold text-gray-900">
+                  {strategy.forecast.nextForecast ? 
+                    new Date(strategy.forecast.nextForecast).toLocaleTimeString('en-US', { 
+                      hour: '2-digit', 
+                      minute: '2-digit', 
+                      second: '2-digit' 
+                    }) : '-'
+                  }
+                </div>
               </div>
             </div>
           </div>
 
-          {/* Right: Historical Performance */}
-          <div className="flex flex-col justify-between min-w-[220px] max-w-[260px] flex-shrink-0 pl-6">
+          {/* Right: Historical Performance - 25% */}
+          <div className="flex flex-col justify-start w-1/4 pl-6">
             <h3 className="text-sm font-semibold text-gray-900 mb-2">Historical Performance</h3>
             <div className="grid grid-cols-3 gap-2 mb-2">
               {Object.entries(strategy.performance.historicalReturns).map(([period, value]) => (
                 <div key={period} className="bg-gray-50 rounded-lg p-3 text-center border border-gray-200">
-                  <div className="text-xs text-gray-500 mb-1">{period}</div>
-                  <div className={`text-base font-semibold ${getPerformanceColor(value)}`}>{value.toFixed(2)}%</div>
+                  <div className="text-xs text-gray-500 mb-1 truncate">{period}</div>
+                  <div className={`text-sm font-semibold ${getPerformanceColor(value)}`}>{value.toFixed(2)}%</div>
                 </div>
               ))}
             </div>
@@ -520,14 +544,23 @@ function StrategyDetail({ strategyName, onBack }) {
                   style={{ outline: 'none' }}
                 >
                   <defs>
-                    <linearGradient id="colorPnl" x1="0" y1="0" x2="0" y2="1">
+                    <linearGradient id="colorPnlPositive" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor="#10b981" stopOpacity={0.8}/>
                       <stop offset="50%" stopColor="#34d399" stopOpacity={0.6}/>
                       <stop offset="100%" stopColor="#6ee7b7" stopOpacity={0.3}/>
                     </linearGradient>
-                    <linearGradient id="strokePnl" x1="0" y1="0" x2="1" y2="0">
+                    <linearGradient id="strokePnlPositive" x1="0" y1="0" x2="1" y2="0">
                       <stop offset="0%" stopColor="#059669"/>
                       <stop offset="100%" stopColor="#10b981"/>
+                    </linearGradient>
+                    <linearGradient id="colorPnlNegative" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#ef4444" stopOpacity={0.8}/>
+                      <stop offset="50%" stopColor="#f87171" stopOpacity={0.6}/>
+                      <stop offset="100%" stopColor="#fca5a5" stopOpacity={0.3}/>
+                    </linearGradient>
+                    <linearGradient id="strokePnlNegative" x1="0" y1="0" x2="1" y2="0">
+                      <stop offset="0%" stopColor="#dc2626"/>
+                      <stop offset="100%" stopColor="#ef4444"/>
                     </linearGradient>
                   </defs>
                   
@@ -574,12 +607,24 @@ function StrategyDetail({ strategyName, onBack }) {
                     })}
                   />
                   
+                  {/* Base line for continuity */}
                   <Area 
                     type="monotone" 
-                    dataKey="pnl" 
-                    stroke="url(#strokePnl)" 
+                    dataKey="continuousPnl" 
+                    stroke="#6b7280" 
                     strokeWidth={3}
-                    fill="url(#colorPnl)" 
+                    fill="transparent"
+                    dot={false}
+                    activeDot={false}
+                  />
+                  
+                  {/* Positive P&L Area */}
+                  <Area 
+                    type="monotone" 
+                    dataKey="positivePnl" 
+                    stroke="url(#strokePnlPositive)" 
+                    strokeWidth={3}
+                    fill="url(#colorPnlPositive)" 
                     fillOpacity={1}
                     dot={false}
                     activeDot={{
@@ -590,30 +635,48 @@ function StrategyDetail({ strategyName, onBack }) {
                       style: { filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.1))' }
                     }}
                   />
+                  
+                  {/* Negative P&L Area */}
+                  <Area 
+                    type="monotone" 
+                    dataKey="negativePnl" 
+                    stroke="url(#strokePnlNegative)" 
+                    strokeWidth={3}
+                    fill="url(#colorPnlNegative)" 
+                    fillOpacity={1}
+                    dot={false}
+                    activeDot={{
+                      r: 6,
+                      fill: '#ef4444',
+                      stroke: '#ffffff',
+                      strokeWidth: 2,
+                      style: { filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.1))' }
+                    }}
+                  />
+                  
+                  {/* Performance Stats */}
+                  <div className="grid grid-cols-3 gap-4 mt-6">
+                    <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-100">
+                      <div className="text-sm text-gray-500 mb-1">Peak P&L</div>
+                      <div className="text-xl font-bold text-green-600">
+                        {Math.max(...pnlSeries.map(d => d.pnl || 0)).toFixed(2)}%
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-100">
+                      <div className="text-sm text-gray-500 mb-1">Data Points</div>
+                      <div className="text-xl font-bold text-blue-600">
+                        {pnlSeries.length}
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-100">
+                      <div className="text-sm text-gray-500 mb-1">Avg P&L</div>
+                      <div className="text-xl font-bold text-purple-600">
+                        {(pnlSeries.reduce((sum, d) => sum + (d.pnl || 0), 0) / pnlSeries.length).toFixed(2)}%
+                      </div>
+                    </div>
+                  </div>
                 </AreaChart>
               </ResponsiveContainer>
-              
-              {/* Performance Stats */}
-              <div className="grid grid-cols-3 gap-4 mt-6">
-                <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-100">
-                  <div className="text-sm text-gray-500 mb-1">Peak P&L</div>
-                  <div className="text-xl font-bold text-green-600">
-                    {Math.max(...pnlSeries.map(d => d.pnl || 0)).toFixed(2)}%
-                  </div>
-                </div>
-                <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-100">
-                  <div className="text-sm text-gray-500 mb-1">Data Points</div>
-                  <div className="text-xl font-bold text-blue-600">
-                    {pnlSeries.length}
-                  </div>
-                </div>
-                <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-100">
-                  <div className="text-sm text-gray-500 mb-1">Avg P&L</div>
-                  <div className="text-xl font-bold text-purple-600">
-                    {(pnlSeries.reduce((sum, d) => sum + (d.pnl || 0), 0) / pnlSeries.length).toFixed(2)}%
-                  </div>
-                </div>
-              </div>
             </div>
           ) : (
             <div className="flex items-center justify-center h-80">
