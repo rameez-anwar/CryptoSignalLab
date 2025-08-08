@@ -1,21 +1,22 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import axios from 'axios';
 import { Link } from 'react-router-dom';
-import { Plus, Edit, Trash2, Users, Eye, EyeOff, Search, X, ChevronDown, X as XIcon, BarChart3 } from 'lucide-react';
+import { Plus, Edit, Trash2, Users, Eye, EyeOff, Search, X, ChevronDown, X as XIcon, BarChart3, AlertCircle } from 'lucide-react';
+import Header from './components/Header';
 
 // Move Modal outside UserManagement
 const Modal = ({ isOpen, onClose, title, onSubmit, children }) => {
   if (!isOpen) return null;
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+      <div className="bg-white rounded-lg shadow-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto border border-gray-200">
         <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold text-gray-900">{title}</h2>
+          <h2 className="text-xl font-semibold text-gray-900">{title}</h2>
           <button
             onClick={onClose}
             className="text-gray-400 hover:text-gray-600 transition-colors"
           >
-            <X className="w-6 h-6" />
+            <X className="w-5 h-5" />
           </button>
         </div>
         {children}
@@ -288,8 +289,9 @@ function UserManagement() {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading users...</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-2 border-gray-300 border-t-blue-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600 font-medium">Loading users...</p>
+          <p className="text-sm text-gray-500 mt-2">Preparing user management</p>
         </div>
       </div>
     );
@@ -297,48 +299,20 @@ function UserManagement() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-gradient-to-r from-blue-600 to-indigo-700 shadow-lg border-b border-blue-500">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between py-4">
-            <div className="flex items-center space-x-3">
-              <div className="bg-white p-2 rounded-lg shadow-md">
-                <BarChart3 className="w-6 h-6 text-blue-600" />
-              </div>
-              <h1 className="text-2xl font-bold text-white">Crypto Signal Lab</h1>
-            </div>
-            
-            {/* Navigation */}
-            <nav className="flex space-x-1">
-              <Link
-                to="/"
-                className="px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 text-blue-100 hover:text-white hover:bg-blue-500"
-              >
-                Simulator
-              </Link>
-              <Link
-                to="/user-management"
-                className="px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 bg-white text-blue-600 shadow-md"
-              >
-                User Management
-              </Link>
-            </nav>
-          </div>
-        </div>
-      </header>
+      <Header activePage="user-management" />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Header Section */}
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">User Management</h1>
-            <p className="text-gray-600 mt-2">Manage user accounts and strategy access</p>
+            <h1 className="text-2xl font-bold text-gray-900">User Management</h1>
+            <p className="text-gray-600 mt-1">Manage user accounts and strategy access</p>
           </div>
           <button
             onClick={() => setShowAddModal(true)}
-            className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white px-6 py-3 rounded-lg font-semibold transition-all duration-200 flex items-center space-x-2 shadow-lg hover:shadow-xl"
+            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium transition-colors flex items-center space-x-2 shadow-sm"
           >
-            <Plus className="w-5 h-5" />
+            <Plus className="w-4 h-4" />
             <span>Add User</span>
           </button>
         </div>
@@ -346,24 +320,29 @@ function UserManagement() {
         {/* Error Message */}
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-            <div className="flex">
-              <div className="flex-shrink-0">
-                <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                </svg>
+            <div className="flex items-center">
+              <div className="w-8 h-8 bg-red-100 rounded-full flex items-center justify-center mr-3">
+                <AlertCircle className="h-4 w-4 text-red-600" />
               </div>
-              <div className="ml-3">
-                <p className="text-sm text-red-800">{error}</p>
+              <div>
+                <h3 className="text-sm font-medium text-red-800">Error</h3>
+                <p className="text-sm text-red-700 mt-1">{error}</p>
               </div>
             </div>
           </div>
         )}
 
         {/* Users Table */}
-        <div className="bg-white rounded-xl shadow-lg overflow-hidden border border-gray-200">
-          <div className="px-6 py-4 bg-gradient-to-r from-gray-50 to-blue-50 border-b border-gray-200">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+          <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-gray-900">Users ({users.length})</h3>
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Users</h3>
+                <p className="text-sm text-gray-600 mt-1">Account management and permissions</p>
+              </div>
+              <div className="text-sm text-gray-600">
+                {users.length} total users
+              </div>
             </div>
           </div>
           <div className="overflow-x-auto">
@@ -408,7 +387,7 @@ function UserManagement() {
                       <div className="flex justify-end space-x-2">
                         <button
                           onClick={() => openEditModal(user)}
-                          className="text-indigo-600 hover:text-indigo-900 transition-colors p-1 rounded hover:bg-indigo-50"
+                          className="text-blue-600 hover:text-blue-900 transition-colors p-1 rounded hover:bg-blue-50"
                           title="Edit user"
                         >
                           <Edit className="w-4 h-4" />
@@ -430,7 +409,9 @@ function UserManagement() {
           
           {users.length === 0 && (
             <div className="text-center py-12">
-              <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+              <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Users className="w-8 h-8 text-gray-400" />
+              </div>
               <h3 className="text-lg font-medium text-gray-900 mb-2">No users found</h3>
               <p className="text-gray-500">Get started by adding your first user.</p>
             </div>

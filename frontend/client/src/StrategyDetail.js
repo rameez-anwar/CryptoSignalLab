@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { ArrowLeft, BarChart3, AlertCircle } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, PieChart, Pie, Cell, BarChart, Bar } from 'recharts';
 import {
   useReactTable,
@@ -10,6 +11,7 @@ import {
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table';
+import Header from './components/Header';
 
 function StrategyDetail({ strategyName, onBack }) {
   const [strategy, setStrategy] = useState(null);
@@ -102,7 +104,7 @@ function StrategyDetail({ strategyName, onBack }) {
       }),
       columnHelper.accessor('balance', {
         header: 'Balance',
-        cell: (info) => `$${parseFloat(info.getValue()).toFixed(2)}`,
+        cell: (info) => `$${parseFloat(info.getValue() || 0).toFixed(2)}`,
         size: 120,
       }),
     ],
@@ -279,28 +281,35 @@ function StrategyDetail({ strategyName, onBack }) {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-gradient-to-r from-blue-600 to-indigo-700 shadow-lg border-b border-blue-500">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center py-4">
-            <button
-              onClick={onBack}
-              className="flex items-center space-x-2 text-blue-100 hover:text-white transition-colors mr-6"
-            >
-              <ArrowLeft className="w-5 h-5" />
-              <span>Back to Strategies</span>
-            </button>
-            <div className="flex items-center space-x-3">
-              <div className="bg-white p-2 rounded-lg shadow-md">
-                <BarChart3 className="w-6 h-6 text-blue-600" />
-              </div>
-              <h1 className="text-2xl font-bold text-white">Simulator {'>'} Strategy</h1>
-            </div>
-          </div>
-        </div>
-      </header>
+      <Header activePage="simulator" />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Enhanced Breadcrumbs */}
+        <nav className="flex items-center justify-between mb-6">
+          <div className="flex items-center space-x-2 text-sm">
+            <Link
+              to="/"
+              className="text-blue-600 hover:text-blue-800 transition-colors font-medium"
+            >
+              Simulator
+            </Link>
+            <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            <span className="text-gray-900 font-semibold bg-blue-50 px-3 py-1 rounded-lg border border-blue-200">
+              {strategyName}
+            </span>
+          </div>
+          
+          <button
+            onClick={onBack}
+            className="flex items-center space-x-2 text-blue-600 hover:text-blue-800 transition-colors font-medium bg-blue-50 hover:bg-blue-100 px-3 py-1 rounded-lg border border-blue-200"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back to Strategies</span>
+          </button>
+        </nav>
+
         {/* Top Section: Single Horizontal Card */}
         <div className="bg-white rounded-xl shadow-lg p-6 mb-8 flex flex-col lg:flex-row gap-6 items-stretch">
           {/* Left: Strategy Info */}
@@ -673,21 +682,17 @@ function StrategyDetail({ strategyName, onBack }) {
                       />
                       <Bar 
                         dataKey="pnl" 
-                        fill={(entry) => {
-                          const pnl = entry.pnl;
-                          if (pnl > 0) return '#10b981';
-                          if (pnl < 0) return '#ef4444';
-                          return '#6b7280';
-                        }}
                         radius={[3, 3, 0, 0]}
-                        stroke={(entry) => {
-                          const pnl = entry.pnl;
-                          if (pnl > 0) return '#059669';
-                          if (pnl < 0) return '#dc2626';
-                          return '#4b5563';
-                        }}
                         strokeWidth={1}
-                      />
+                      >
+                        {winLossData?.individualPnl?.map((pnl, index) => (
+                          <Cell 
+                            key={`cell-${index}`}
+                            fill={pnl > 0 ? '#10b981' : pnl < 0 ? '#ef4444' : '#6b7280'}
+                            stroke={pnl > 0 ? '#059669' : pnl < 0 ? '#dc2626' : '#4b5563'}
+                          />
+                        ))}
+                      </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
