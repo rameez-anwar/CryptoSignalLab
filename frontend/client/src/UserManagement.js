@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import axios from 'axios';
-import { Plus, Edit, Trash2, Users, Eye, EyeOff, Search, X } from 'lucide-react';
+import { Plus, Edit, Trash2, Users, Eye, EyeOff, Search, X, ChevronDown, X as XIcon } from 'lucide-react';
 
 // Move Modal outside UserManagement
 const Modal = ({ isOpen, onClose, title, onSubmit, children }) => {
@@ -34,6 +34,7 @@ function UserManagement() {
   const [showApiSecret, setShowApiSecret] = useState(false);
   const [error, setError] = useState(null);
   const [strategySearch, setStrategySearch] = useState('');
+  const [dropdownOpen, setDropdownOpen] = useState(false);
 
   // Separate form states to prevent re-renders
   const [name, setName] = useState('');
@@ -42,6 +43,22 @@ function UserManagement() {
   const [apiKey, setApiKey] = useState('');
   const [apiSecret, setApiSecret] = useState('');
   const [selectedStrategies, setSelectedStrategies] = useState([]);
+
+  const dropdownRef = useRef(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
 
   // Fetch users and strategies
   useEffect(() => {
@@ -198,6 +215,24 @@ function UserManagement() {
         return prev.filter(s => s !== strategyName);
       }
     });
+  }, []);
+
+  const handleStrategySelect = useCallback((strategyName) => {
+    setSelectedStrategies(prev => {
+      if (prev.includes(strategyName)) {
+        return prev.filter(s => s !== strategyName);
+      } else {
+        return [...prev, strategyName];
+      }
+    });
+  }, []);
+
+  const removeStrategy = useCallback((strategyName) => {
+    setSelectedStrategies(prev => prev.filter(s => s !== strategyName));
+  }, []);
+
+  const toggleDropdown = useCallback(() => {
+    setDropdownOpen(prev => !prev);
   }, []);
 
   const filteredStrategies = useMemo(() => 
@@ -424,35 +459,77 @@ function UserManagement() {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Strategies</label>
-            <div className="space-y-3">
+            <div className="relative" ref={dropdownRef}>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <Search className="h-4 w-4 text-gray-400" />
+                <div
+                  onClick={toggleDropdown}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors cursor-pointer min-h-[40px] flex items-center justify-between"
+                >
+                  <div className="flex flex-wrap gap-1 flex-1">
+                    {selectedStrategies.length > 0 ? (
+                      selectedStrategies.map((strategy) => (
+                        <span
+                          key={strategy}
+                          className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
+                        >
+                          {strategy}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeStrategy(strategy);
+                            }}
+                            className="ml-1 text-blue-600 hover:text-blue-800"
+                          >
+                            <XIcon className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-gray-500">Select strategies...</span>
+                    )}
+                  </div>
+                  <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} />
                 </div>
-                <input
-                  type="text"
-                  value={strategySearch}
-                  onChange={(e) => setStrategySearch(e.target.value)}
-                  className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-                  placeholder="Search strategies..."
-                />
-              </div>
-              <div className="max-h-48 overflow-y-auto border border-gray-300 rounded-lg p-3 bg-gray-50">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {filteredStrategies.map((strategy) => (
-                    <label key={strategy.name} className="flex items-center space-x-2 p-2 rounded hover:bg-white transition-colors">
-                      <input
-                        type="checkbox"
-                        checked={selectedStrategies.includes(strategy.name)}
-                        onChange={(e) => handleStrategyChange(strategy.name, e.target.checked)}
-                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                      />
-                      <span className="text-sm text-gray-700">{strategy.name}</span>
-                    </label>
-                  ))}
-                </div>
-                {filteredStrategies.length === 0 && (
-                  <p className="text-sm text-gray-500 text-center py-4">No strategies found</p>
+                
+                {dropdownOpen && (
+                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                    <div className="p-2">
+                      <div className="relative mb-2">
+                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                          <Search className="h-4 w-4 text-gray-400" />
+                        </div>
+                        <input
+                          type="text"
+                          value={strategySearch}
+                          onChange={(e) => setStrategySearch(e.target.value)}
+                          className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-sm"
+                          placeholder="Search strategies..."
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        {filteredStrategies.map((strategy) => (
+                          <div
+                            key={strategy.name}
+                            onClick={() => handleStrategySelect(strategy.name)}
+                            className={`px-3 py-2 rounded cursor-pointer transition-colors ${
+                              selectedStrategies.includes(strategy.name)
+                                ? 'bg-blue-100 text-blue-800'
+                                : 'hover:bg-gray-100 text-gray-700'
+                            }`}
+                          >
+                            {strategy.name}
+                          </div>
+                        ))}
+                        {filteredStrategies.length === 0 && (
+                          <div className="px-3 py-2 text-sm text-gray-500 text-center">
+                            No strategies found
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
@@ -574,35 +651,77 @@ function UserManagement() {
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Strategies</label>
-            <div className="space-y-3">
+            <div className="relative" ref={dropdownRef}>
               <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <Search className="h-4 w-4 text-gray-400" />
+                <div
+                  onClick={toggleDropdown}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors cursor-pointer min-h-[40px] flex items-center justify-between"
+                >
+                  <div className="flex flex-wrap gap-1 flex-1">
+                    {selectedStrategies.length > 0 ? (
+                      selectedStrategies.map((strategy) => (
+                        <span
+                          key={strategy}
+                          className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
+                        >
+                          {strategy}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeStrategy(strategy);
+                            }}
+                            className="ml-1 text-blue-600 hover:text-blue-800"
+                          >
+                            <XIcon className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-gray-500">Select strategies...</span>
+                    )}
+                  </div>
+                  <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} />
                 </div>
-                <input
-                  type="text"
-                  value={strategySearch}
-                  onChange={(e) => setStrategySearch(e.target.value)}
-                  className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
-                  placeholder="Search strategies..."
-                />
-              </div>
-              <div className="max-h-48 overflow-y-auto border border-gray-300 rounded-lg p-3 bg-gray-50">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {filteredStrategies.map((strategy) => (
-                    <label key={strategy.name} className="flex items-center space-x-2 p-2 rounded hover:bg-white transition-colors">
-                      <input
-                        type="checkbox"
-                        checked={selectedStrategies.includes(strategy.name)}
-                        onChange={(e) => handleStrategyChange(strategy.name, e.target.checked)}
-                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                      />
-                      <span className="text-sm text-gray-700">{strategy.name}</span>
-                    </label>
-                  ))}
-                </div>
-                {filteredStrategies.length === 0 && (
-                  <p className="text-sm text-gray-500 text-center py-4">No strategies found</p>
+                
+                {dropdownOpen && (
+                  <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                    <div className="p-2">
+                      <div className="relative mb-2">
+                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                          <Search className="h-4 w-4 text-gray-400" />
+                        </div>
+                        <input
+                          type="text"
+                          value={strategySearch}
+                          onChange={(e) => setStrategySearch(e.target.value)}
+                          className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-sm"
+                          placeholder="Search strategies..."
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        {filteredStrategies.map((strategy) => (
+                          <div
+                            key={strategy.name}
+                            onClick={() => handleStrategySelect(strategy.name)}
+                            className={`px-3 py-2 rounded cursor-pointer transition-colors ${
+                              selectedStrategies.includes(strategy.name)
+                                ? 'bg-blue-100 text-blue-800'
+                                : 'hover:bg-gray-100 text-gray-700'
+                            }`}
+                          >
+                            {strategy.name}
+                          </div>
+                        ))}
+                        {filteredStrategies.length === 0 && (
+                          <div className="px-3 py-2 text-sm text-gray-500 text-center">
+                            No strategies found
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
                 )}
               </div>
             </div>

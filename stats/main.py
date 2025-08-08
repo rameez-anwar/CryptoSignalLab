@@ -196,121 +196,22 @@ def main():
             print(f"\n--- Inserting {len(all_stats_dfs)} strategy results to database ---")
             combined_stats = pd.concat(all_stats_dfs, ignore_index=True)
             
-            # Choose insertion method based on data size
-            if len(combined_stats) > 50:
-                print(f"Large dataset detected ({len(combined_stats)} records). Using fast COPY method...")
-                # Use fast COPY method for large datasets
-                from io import StringIO
-                import csv
-                
-                # Convert DataFrame to CSV string
-                output = StringIO()
-                combined_stats.to_csv(output, index=False, header=False, quoting=csv.QUOTE_NONNUMERIC)
-                output.seek(0)
-                
-                # Use COPY command for fastest insertion
-                with engine.raw_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.copy_expert(
-                            "COPY stats.strategy_stats FROM STDIN WITH CSV",
-                            output
-                        )
-                    conn.commit()
-                print(f"✓ Successfully inserted {len(combined_stats)} strategy records using COPY")
-            else:
-                print(f"Inserting {len(combined_stats)} records using optimized to_sql...")
-                
-                # Use optimized to_sql with proper SQLAlchemy types
-                combined_stats.to_sql(
-                    "strategy_stats", 
-                    engine, 
-                    schema="stats", 
-                    if_exists="append", 
-                    index=False, 
-                    method='multi',
-                    chunksize=1000,  # Smaller chunks for better performance
-                    dtype={
-                        'strategy_name': VARCHAR(255),
-                        'total_return': DECIMAL(10,4),
-                        'daily_return': DECIMAL(10,4),
-                        'weekly_return': DECIMAL(10,4),
-                        'monthly_return': DECIMAL(10,4),
-                        'cagr': DECIMAL(10,4),
-                        'sharpe_ratio': DECIMAL(10,4),
-                        'sortino_ratio': DECIMAL(10,4),
-                        'calmar_ratio': DECIMAL(10,4),
-                        'alpha': DECIMAL(10,4),
-                        'beta': DECIMAL(10,4),
-                        'r_squared': DECIMAL(10,4),
-                        'information_ratio': DECIMAL(10,4),
-                        'treynor_ratio': DECIMAL(10,4),
-                        'profit_factor': DECIMAL(10,4),
-                        'omega_ratio': DECIMAL(10,4),
-                        'gain_to_pain_ratio': DECIMAL(10,4),
-                        'payoff_ratio': DECIMAL(10,4),
-                        'cpc_ratio': DECIMAL(10,4),
-                        'risk_return_ratio': DECIMAL(10,4),
-                        'common_sense_ratio': DECIMAL(10,4),
-                        'max_drawdown': DECIMAL(10,4),
-                        'max_drawdown_days': INTEGER,
-                        'avg_drawdown': DECIMAL(10,4),
-                        'avg_drawdown_days': DECIMAL(10,4),
-                        'current_drawdown': DECIMAL(10,4),
-                        'current_drawdown_days': INTEGER,
-                        'drawdown_duration': INTEGER,
-                        'conditional_drawdown_at_risk': DECIMAL(10,4),
-                        'ulcer_index': DECIMAL(10,4),
-                        'risk_of_ruin': DECIMAL(10,4),
-                        'var_95': DECIMAL(10,4),
-                        'cvar_99': DECIMAL(10,4),
-                        'downside_deviation': DECIMAL(10,4),
-                        'volatility': DECIMAL(10,4),
-                        'annualized_volatility': DECIMAL(10,4),
-                        'skewness': DECIMAL(10,4),
-                        'kurtosis': DECIMAL(10,4),
-                        'winning_weeks': INTEGER,
-                        'losing_weeks': INTEGER,
-                        'winning_months': INTEGER,
-                        'losing_months': INTEGER,
-                        'winning_months_percent': DECIMAL(10,4),
-                        'negative_months_percent': DECIMAL(10,4),
-                        'total_profit': DECIMAL(10,4),
-                        'net_profit': DECIMAL(10,4),
-                        'avg_profit_per_trade': DECIMAL(10,4),
-                        'avg_loss_per_trade': DECIMAL(10,4),
-                        'profit_loss_ratio': DECIMAL(10,4),
-                        'number_of_trades': INTEGER,
-                        'win_rate': DECIMAL(10,4),
-                        'loss_rate': DECIMAL(10,4),
-                        'average_win': DECIMAL(10,4),
-                        'average_loss': DECIMAL(10,4),
-                        'average_trade_duration': DECIMAL(10,4),
-                        'largest_win': DECIMAL(10,4),
-                        'largest_loss': DECIMAL(10,4),
-                        'consecutive_wins': INTEGER,
-                        'consecutive_losses': INTEGER,
-                        'avg_trade_return': DECIMAL(10,4),
-                        'profitability_per_trade': DECIMAL(10,4),
-                        'recovery_factor': DECIMAL(10,4),
-                        'total_long_return': DECIMAL(10,4),
-                        'avg_long_return_per_trade': DECIMAL(10,4),
-                        'num_long_trades': INTEGER,
-                        'win_rate_long_trades': DECIMAL(10,4),
-                        'avg_long_trade_duration': DECIMAL(10,4),
-                        'max_long_trade_return': DECIMAL(10,4),
-                        'min_long_trade_return': DECIMAL(10,4),
-                        'long_trades_percent': DECIMAL(10,4),
-                        'total_short_return': DECIMAL(10,4),
-                        'avg_short_return_per_trade': DECIMAL(10,4),
-                        'num_short_trades': INTEGER,
-                        'win_rate_short_trades': DECIMAL(10,4),
-                        'avg_short_trade_duration': DECIMAL(10,4),
-                        'max_short_trade_return': DECIMAL(10,4),
-                        'min_short_trade_return': DECIMAL(10,4),
-                        'short_trades_percent': DECIMAL(10,4)
-                    }
-                )
-                print(f"✓ Successfully inserted {len(combined_stats)} strategy records")
+            # Use fast bulk insert with executemany
+            print(f"Using fast bulk insert for {len(combined_stats)} records...")
+            
+            # Prepare the insert statement
+            columns = list(combined_stats.columns)
+            placeholders = ', '.join(['%s'] * len(columns))
+            insert_sql = f"INSERT INTO stats.strategy_stats ({', '.join(columns)}) VALUES ({placeholders})"
+            
+            # Convert DataFrame to list of tuples for bulk insert
+            data_tuples = [tuple(row) for row in combined_stats.values]
+            
+            # Execute bulk insert
+            cursor.executemany(insert_sql, data_tuples)
+            connection.commit()
+            
+            print(f"✓ Successfully inserted {len(combined_stats)} strategy records using bulk insert")
         else:
             print("No stats to insert")
         
