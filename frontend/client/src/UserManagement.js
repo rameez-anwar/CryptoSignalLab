@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import axios from 'axios';
-import { Plus, Edit, Trash2, Users, Eye, EyeOff, Search, X, ChevronDown, X as XIcon } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Plus, Edit, Trash2, Users, Eye, EyeOff, Search, X, ChevronDown, X as XIcon, BarChart3 } from 'lucide-react';
 
 // Move Modal outside UserManagement
 const Modal = ({ isOpen, onClose, title, onSubmit, children }) => {
@@ -207,15 +208,53 @@ function UserManagement() {
     }
   };
 
-  const handleStrategySelect = useCallback((strategyName) => {
-    setSelectedStrategies(prev => {
-      if (prev.includes(strategyName)) {
-        return prev.filter(s => s !== strategyName);
-      } else {
-        return [...prev, strategyName];
+  // Group strategies by symbol
+  const strategiesBySymbol = useMemo(() => {
+    const grouped = {};
+    strategies.forEach(strategy => {
+      const symbol = strategy.parameters.symbol;
+      if (!grouped[symbol]) {
+        grouped[symbol] = [];
       }
+      grouped[symbol].push(strategy);
     });
-  }, []);
+    return grouped;
+  }, [strategies]);
+
+  // Get available symbols (symbols that don't have a selected strategy)
+  const availableSymbols = useMemo(() => {
+    const selectedSymbols = selectedStrategies.map(strategyName => {
+      const strategy = strategies.find(s => s.name === strategyName);
+      return strategy ? strategy.parameters.symbol : null;
+    }).filter(Boolean);
+    
+    return Object.keys(strategiesBySymbol).filter(symbol => 
+      !selectedSymbols.includes(symbol)
+    );
+  }, [strategiesBySymbol, selectedStrategies, strategies]);
+
+  const handleStrategySelect = useCallback((strategyName) => {
+    const strategy = strategies.find(s => s.name === strategyName);
+    if (!strategy) return;
+
+    const symbol = strategy.parameters.symbol;
+    
+    // Check if this symbol already has a selected strategy
+    const existingStrategyForSymbol = selectedStrategies.find(selectedStrategyName => {
+      const selectedStrategy = strategies.find(s => s.name === selectedStrategyName);
+      return selectedStrategy && selectedStrategy.parameters.symbol === symbol;
+    });
+
+    if (existingStrategyForSymbol) {
+      // Replace the existing strategy for this symbol
+      setSelectedStrategies(prev => 
+        prev.filter(s => s !== existingStrategyForSymbol).concat(strategyName)
+      );
+    } else {
+      // Add new strategy
+      setSelectedStrategies(prev => [...prev, strategyName]);
+    }
+  }, [selectedStrategies, strategies]);
 
   const removeStrategy = useCallback((strategyName) => {
     setSelectedStrategies(prev => prev.filter(s => s !== strategyName));
@@ -225,11 +264,25 @@ function UserManagement() {
     setDropdownOpen(prev => !prev);
   }, []);
 
-  const filteredStrategies = useMemo(() => 
-    strategies.filter(strategy =>
-      strategy.name.toLowerCase().includes(strategySearch.toLowerCase())
-    ), [strategies, strategySearch]
-  );
+  // Filter strategies based on search and available symbols
+  const filteredStrategies = useMemo(() => {
+    let filtered = strategies;
+    
+    // Filter by search term
+    if (strategySearch) {
+      filtered = filtered.filter(strategy =>
+        strategy.name.toLowerCase().includes(strategySearch.toLowerCase()) ||
+        strategy.parameters.symbol.toLowerCase().includes(strategySearch.toLowerCase())
+      );
+    }
+    
+    // Only show strategies for available symbols (symbols without selected strategies)
+    filtered = filtered.filter(strategy => 
+      availableSymbols.includes(strategy.parameters.symbol)
+    );
+    
+    return filtered;
+  }, [strategies, strategySearch, availableSymbols]);
 
   if (loading) {
     return (
@@ -244,6 +297,36 @@ function UserManagement() {
 
   return (
     <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <header className="bg-gradient-to-r from-blue-600 to-indigo-700 shadow-lg border-b border-blue-500">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between py-4">
+            <div className="flex items-center space-x-3">
+              <div className="bg-white p-2 rounded-lg shadow-md">
+                <BarChart3 className="w-6 h-6 text-blue-600" />
+              </div>
+              <h1 className="text-2xl font-bold text-white">Crypto Signal Lab</h1>
+            </div>
+            
+            {/* Navigation */}
+            <nav className="flex space-x-1">
+              <Link
+                to="/"
+                className="px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 text-blue-100 hover:text-white hover:bg-blue-500"
+              >
+                Simulator
+              </Link>
+              <Link
+                to="/user-management"
+                className="px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200 bg-white text-blue-600 shadow-md"
+              >
+                User Management
+              </Link>
+            </nav>
+          </div>
+        </div>
+      </header>
+
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Header Section */}
         <div className="flex items-center justify-between mb-8">
@@ -448,7 +531,9 @@ function UserManagement() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Strategies</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Strategies (One per symbol)
+            </label>
             <div className="relative" ref={dropdownRef}>
               <div className="relative">
                 <div
@@ -457,26 +542,30 @@ function UserManagement() {
                 >
                   <div className="flex flex-wrap gap-1 flex-1">
                     {selectedStrategies.length > 0 ? (
-                      selectedStrategies.map((strategy) => (
-                        <span
-                          key={strategy}
-                          className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
-                        >
-                          {strategy}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              removeStrategy(strategy);
-                            }}
-                            className="ml-1 text-blue-600 hover:text-blue-800"
+                      selectedStrategies.map((strategy) => {
+                        const strategyObj = strategies.find(s => s.name === strategy);
+                        const symbol = strategyObj ? strategyObj.parameters.symbol : '';
+                        return (
+                          <span
+                            key={strategy}
+                            className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
                           >
-                            <XIcon className="w-3 h-3" />
-                          </button>
-                        </span>
-                      ))
+                            {strategy} ({symbol.toUpperCase()})
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removeStrategy(strategy);
+                              }}
+                              className="ml-1 text-blue-600 hover:text-blue-800"
+                            >
+                              <XIcon className="w-3 h-3" />
+                            </button>
+                          </span>
+                        );
+                      })
                     ) : (
-                      <span className="text-gray-500">Select strategies...</span>
+                      <span className="text-gray-500">Select strategies (one per symbol)...</span>
                     )}
                   </div>
                   <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} />
@@ -509,12 +598,20 @@ function UserManagement() {
                                 : 'hover:bg-gray-100 text-gray-700'
                             }`}
                           >
-                            {strategy.name}
+                            <div className="flex justify-between items-center">
+                              <span>{strategy.name}</span>
+                              <span className="text-xs text-gray-500">
+                                {strategy.parameters.symbol.toUpperCase()}
+                              </span>
+                            </div>
                           </div>
                         ))}
                         {filteredStrategies.length === 0 && (
                           <div className="px-3 py-2 text-sm text-gray-500 text-center">
-                            No strategies found
+                            {availableSymbols.length === 0 
+                              ? 'All symbols have been selected' 
+                              : 'No strategies found'
+                            }
                           </div>
                         )}
                       </div>
@@ -523,6 +620,9 @@ function UserManagement() {
                 )}
               </div>
             </div>
+            <p className="text-xs text-gray-500 mt-1">
+              You can select one strategy per symbol. Available symbols: {availableSymbols.map(s => s.toUpperCase()).join(', ')}
+            </p>
           </div>
 
           <div className="flex justify-end space-x-3 pt-4">
@@ -640,7 +740,9 @@ function UserManagement() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Strategies</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Strategies (One per symbol)
+            </label>
             <div className="relative" ref={dropdownRef}>
               <div className="relative">
                 <div
@@ -649,26 +751,30 @@ function UserManagement() {
                 >
                   <div className="flex flex-wrap gap-1 flex-1">
                     {selectedStrategies.length > 0 ? (
-                      selectedStrategies.map((strategy) => (
-                        <span
-                          key={strategy}
-                          className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
-                        >
-                          {strategy}
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              removeStrategy(strategy);
-                            }}
-                            className="ml-1 text-blue-600 hover:text-blue-800"
+                      selectedStrategies.map((strategy) => {
+                        const strategyObj = strategies.find(s => s.name === strategy);
+                        const symbol = strategyObj ? strategyObj.parameters.symbol : '';
+                        return (
+                          <span
+                            key={strategy}
+                            className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800"
                           >
-                            <XIcon className="w-3 h-3" />
-                          </button>
-                        </span>
-                      ))
+                            {strategy} ({symbol.toUpperCase()})
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removeStrategy(strategy);
+                              }}
+                              className="ml-1 text-blue-600 hover:text-blue-800"
+                            >
+                              <XIcon className="w-3 h-3" />
+                            </button>
+                          </span>
+                        );
+                      })
                     ) : (
-                      <span className="text-gray-500">Select strategies...</span>
+                      <span className="text-gray-500">Select strategies (one per symbol)...</span>
                     )}
                   </div>
                   <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} />
@@ -701,12 +807,20 @@ function UserManagement() {
                                 : 'hover:bg-gray-100 text-gray-700'
                             }`}
                           >
-                            {strategy.name}
+                            <div className="flex justify-between items-center">
+                              <span>{strategy.name}</span>
+                              <span className="text-xs text-gray-500">
+                                {strategy.parameters.symbol.toUpperCase()}
+                              </span>
+                            </div>
                           </div>
                         ))}
                         {filteredStrategies.length === 0 && (
                           <div className="px-3 py-2 text-sm text-gray-500 text-center">
-                            No strategies found
+                            {availableSymbols.length === 0 
+                              ? 'All symbols have been selected' 
+                              : 'No strategies found'
+                            }
                           </div>
                         )}
                       </div>
@@ -715,6 +829,9 @@ function UserManagement() {
                 )}
               </div>
             </div>
+            <p className="text-xs text-gray-500 mt-1">
+              You can select one strategy per symbol. Available symbols: {availableSymbols.map(s => s.toUpperCase()).join(', ')}
+            </p>
           </div>
 
           <div className="flex justify-end space-x-3 pt-4">
