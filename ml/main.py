@@ -10,17 +10,19 @@ import os
 import sys
 from typing import Dict, Any, List
 import optuna
-import sqlite3
 import json
 from datetime import datetime
+from sqlalchemy import text
 
 # Add paths for existing modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'data', 'downloaders'))
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'backtest'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'data', 'utils'))
 
 # Import existing modules
 from DataDownloader import DataDownloader
 from backtest import Backtester
+from db_utils import get_pg_engine
 
 # Import our ML modules
 from learner.base_learner import BaseLearner
@@ -79,37 +81,239 @@ def run_backtest(data: pd.DataFrame, signals: np.ndarray, initial_capital: float
     
     return pnl_sum
 
-def save_signals_to_csv(data: pd.DataFrame, signals: np.ndarray, model_name: str, config: Dict[str, Any]):
-    """Save signals to CSV file for verification"""
+def clean_model_name(model_name: str) -> str:
+    """Remove _model suffix from model name for table names and file paths"""
+    if model_name.endswith('_model'):
+        return model_name[:-6]  # Remove '_model' suffix
+    return model_name
+
+def display_database_contents(config: Dict[str, Any]):
+    """Display database contents for verification"""
+    engine = get_pg_engine()
+    
+    try:
+        # Show summary table
+        print("\n=== Database Summary ===")
+        summary_query = text("SELECT * FROM ml_summary.ml_summary ORDER BY created_date DESC")
+        summary_df = pd.read_sql_query(summary_query, engine)
+        if len(summary_df) > 0:
+            print(summary_df.to_string(index=False))
+        else:
+            print("No summary data available.")
+        
+        # Show all tables in ml_signals and ml_ledger schemas
+        print("\n=== All ML Tables ===")
+        with engine.connect() as conn:
+            # Get ml_signals tables
+            signals_query = text("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'ml_signals'
+                ORDER BY table_name
+            """)
+            signals_tables = [row[0] for row in conn.execute(signals_query)]
+            
+            # Get ml_ledger tables
+            ledger_query = text("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'ml_ledger'
+                ORDER BY table_name
+            """)
+            ledger_tables = [row[0] for row in conn.execute(ledger_query)]
+        
+        # Display table counts and PnL
+        for table_name in signals_tables:
+            try:
+                count_query = text(f"SELECT COUNT(*) FROM ml_signals.{table_name}")
+                with engine.connect() as conn:
+                    row_count = conn.execute(count_query).scalar()
+                print(f"ml_signals.{table_name}: {row_count} rows")
+            except Exception as e:
+                print(f"ml_signals.{table_name}: Error - {str(e)}")
+        
+        for table_name in ledger_tables:
+            try:
+                count_query = text(f"SELECT COUNT(*) FROM ml_ledger.{table_name}")
+                pnl_query = text(f"SELECT COALESCE(SUM(pnl_percent), 0) FROM ml_ledger.{table_name}")
+                with engine.connect() as conn:
+                    row_count = conn.execute(count_query).scalar()
+                    pnl_sum = conn.execute(pnl_query).scalar()
+                    if pnl_sum is None:
+                        pnl_sum = 0.0
+                print(f"ml_ledger.{table_name}: {row_count} rows, Final PnL: {pnl_sum:.2f}")
+            except Exception as e:
+                print(f"ml_ledger.{table_name}: Error - {str(e)}")
+        
+    except Exception as e:
+        print(f"Error displaying database contents: {str(e)}")
+
+def create_database_summary(config: Dict[str, Any]):
+    """Create a summary table to track all signals and ledger tables"""
+    engine = get_pg_engine()
+    
+    try:
+        # Create ml_summary schema if it doesn't exist
+        with engine.connect() as conn:
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS ml_summary"))
+            conn.commit()
+        
+        # Create summary table
+        create_summary_sql = '''
+        CREATE TABLE IF NOT EXISTS ml_summary.ml_summary (
+            id SERIAL PRIMARY KEY,
+            table_name TEXT UNIQUE,
+            table_type TEXT,
+            model_name TEXT,
+            exchange TEXT,
+            symbol TEXT,
+            time_horizon TEXT,
+            created_date TIMESTAMP,
+            final_pnl DOUBLE PRECISION
+        )
+        '''
+        
+        with engine.connect() as conn:
+            conn.execute(text(create_summary_sql))
+            conn.commit()
+        
+        # Get all tables in ml_signals and ml_ledger schemas
+        with engine.connect() as conn:
+            # Get ml_signals tables
+            signals_query = text("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'ml_signals'
+                ORDER BY table_name
+            """)
+            signals_tables = [row[0] for row in conn.execute(signals_query)]
+            
+            # Get ml_ledger tables
+            ledger_query = text("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'ml_ledger'
+                ORDER BY table_name
+            """)
+            ledger_tables = [row[0] for row in conn.execute(ledger_query)]
+        
+        # Update summary for each table
+        for table_name in signals_tables + ledger_tables:
+            # Parse table name to extract components: modelname_exchange_symbol_timehorizon
+            parts = table_name.split('_')
+            if len(parts) >= 4:
+                table_type = 'ml_signals' if table_name in signals_tables else 'ml_ledger'
+                # The first part is the clean model name (without _model suffix)
+                model_name = parts[0]
+                exchange = parts[1]
+                symbol = parts[2]
+                time_horizon = parts[3] if len(parts) > 3 else ''
+                
+                # Get pnl_sum from ledger table (sum of pnl_percent)
+                pnl_sum = 0.0
+                if table_name in ledger_tables:
+                    try:
+                        pnl_query = text(f"SELECT COALESCE(SUM(pnl_percent), 0) FROM ml_ledger.{table_name}")
+                        with engine.connect() as conn:
+                            pnl_sum = conn.execute(pnl_query).scalar()
+                            if pnl_sum is None:
+                                pnl_sum = 0.0
+                    except:
+                        pnl_sum = 0.0
+                
+                # Round final_pnl to 2 decimal places
+                pnl_sum = round(pnl_sum, 2)
+                
+                # Insert or update summary
+                upsert_query = text("""
+                    INSERT INTO ml_summary.ml_summary 
+                    (table_name, table_type, model_name, exchange, symbol, time_horizon, created_date, final_pnl)
+                    VALUES (:table_name, :table_type, :model_name, :exchange, :symbol, :time_horizon, :created_date, :final_pnl)
+                    ON CONFLICT (table_name) 
+                    DO UPDATE SET 
+                        final_pnl = EXCLUDED.final_pnl,
+                        created_date = EXCLUDED.created_date
+                """)
+                
+                with engine.connect() as conn:
+                    conn.execute(upsert_query, {
+                        'table_name': table_name,
+                        'table_type': table_type,
+                        'model_name': model_name,
+                        'exchange': exchange,
+                        'symbol': symbol,
+                        'time_horizon': time_horizon,
+                        'created_date': datetime.now(),
+                        'final_pnl': pnl_sum
+                    })
+                    conn.commit()
+        
+        print(f"Database summary updated in PostgreSQL")
+        
+    except Exception as e:
+        print(f"Error creating database summary: {str(e)}")
+
+def save_signals_to_db(data: pd.DataFrame, signals: np.ndarray, model_name: str, config: Dict[str, Any]):
+    """Save signals to database in ml_signals schema"""
     symbol = config['data']['symbol'].lower()
     time_horizon = config['data']['time_horizon']
+    exchange = config['data']['exchange'].lower()
     
-    # Create signals DataFrame
+    # Create table name: modelname_exchange_symbol_timehorizon (without _model suffix)
+    clean_name = clean_model_name(model_name)
+    table_name = f"{clean_name}_{exchange}_{symbol}_{time_horizon}"
+    
+    # Create signals DataFrame with only datetime and signal
     signals_df = pd.DataFrame({
         'datetime': data.index,
-        'open': data['open'],
-        'high': data['high'],
-        'low': data['low'],
-        'close': data['close'],
-        'volume': data['volume'],
         'signal': signals
     })
     
-    # Create folder for CSV files
-    csv_folder = os.path.join("trainer", symbol, time_horizon, "signals")
-    os.makedirs(csv_folder, exist_ok=True)
+    # Get PostgreSQL engine
+    engine = get_pg_engine()
     
-    # Save to CSV
-    csv_path = os.path.join(csv_folder, f"{model_name}_signals.csv")
-    signals_df.to_csv(csv_path, index=False)
-    print(f"Signals saved to: {csv_path}")
+    try:
+        # Create ml_signals schema if it doesn't exist
+        with engine.connect() as conn:
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS ml_signals"))
+            conn.commit()
+        
+        # Create table if it doesn't exist
+        create_table_sql = f'''
+        CREATE TABLE IF NOT EXISTS ml_signals.{table_name} (
+            datetime TIMESTAMP PRIMARY KEY,
+            signal INTEGER
+        )
+        '''
+        
+        with engine.connect() as conn:
+            conn.execute(text(create_table_sql))
+            conn.commit()
+        
+        # Clear existing data and insert new data
+        with engine.connect() as conn:
+            conn.execute(text(f'DELETE FROM ml_signals.{table_name}'))
+            conn.commit()
+        
+        # Insert signals data
+        signals_df.to_sql(table_name, engine, schema='ml_signals', if_exists='replace', index=False)
+        
+        print(f"Signals saved to database: ml_signals.{table_name}")
+        
+    except Exception as e:
+        print(f"Error saving signals to database: {str(e)}")
     
-    return csv_path
+    return engine
 
-def save_ledger_to_csv(data: pd.DataFrame, signals: np.ndarray, model_name: str, config: Dict[str, Any]):
-    """Save backtest ledger to CSV file for verification"""
+def save_ledger_to_db(data: pd.DataFrame, signals: np.ndarray, model_name: str, config: Dict[str, Any]):
+    """Save backtest ledger to database in ml_ledger schema"""
     symbol = config['data']['symbol'].lower()
     time_horizon = config['data']['time_horizon']
+    exchange = config['data']['exchange'].lower()
+    
+    # Create table name: modelname_exchange_symbol_timehorizon (without _model suffix)
+    clean_name = clean_model_name(model_name)
+    table_name = f"{clean_name}_{exchange}_{symbol}_{time_horizon}"
     
     # Create signals DataFrame
     signals_df = pd.DataFrame({
@@ -131,22 +335,80 @@ def save_ledger_to_csv(data: pd.DataFrame, signals: np.ndarray, model_name: str,
     # Run backtest
     results_df = backtester.run()
     
-    # Create folder for ledger files
-    ledger_folder = os.path.join("trainer", symbol, time_horizon, "ledgers")
-    os.makedirs(ledger_folder, exist_ok=True)
+    # Get PostgreSQL engine
+    engine = get_pg_engine()
     
-    # Save ledger to CSV
-    ledger_path = os.path.join(ledger_folder, f"{model_name}_ledger.csv")
-    if len(results_df) > 0:
-        results_df.to_csv(ledger_path, index=True)
-        print(f"Ledger saved to: {ledger_path}")
-    else:
-        # Create empty ledger file
-        empty_df = pd.DataFrame(columns=['entry_time', 'exit_time', 'entry_price', 'exit_price', 'pnl_percent', 'balance'])
-        empty_df.to_csv(ledger_path, index=False)
-        print(f"Empty ledger saved to: {ledger_path}")
+    try:
+        # Create ml_ledger schema if it doesn't exist
+        with engine.connect() as conn:
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS ml_ledger"))
+            conn.commit()
+        
+        # Create table if it doesn't exist
+        create_table_sql = f'''
+        CREATE TABLE IF NOT EXISTS ml_ledger.{table_name} (
+            entry_time TIMESTAMP,
+            exit_time TIMESTAMP,
+            entry_price DOUBLE PRECISION,
+            exit_price DOUBLE PRECISION,
+            pnl_percent DOUBLE PRECISION,
+            balance DOUBLE PRECISION
+        )
+        '''
+        
+        with engine.connect() as conn:
+            conn.execute(text(create_table_sql))
+            conn.commit()
+        
+        # Clear existing data
+        with engine.connect() as conn:
+            conn.execute(text(f'DELETE FROM ml_ledger.{table_name}'))
+            conn.commit()
+        
+        if len(results_df) > 0:
+            # Round values to 2 decimal places
+            results_df_rounded = results_df.round(2)
+            # Insert ledger data without index
+            results_df_rounded.to_sql(table_name, engine, schema='ml_ledger', if_exists='replace', index=False)
+            print(f"Ledger saved to database: ml_ledger.{table_name}")
+        else:
+            # Create empty ledger table
+            empty_df = pd.DataFrame(columns=['entry_time', 'exit_time', 'entry_price', 'exit_price', 'pnl_percent', 'balance'])
+            empty_df.to_sql(table_name, engine, schema='ml_ledger', if_exists='replace', index=False)
+            print(f"Empty ledger saved to database: ml_ledger.{table_name}")
+        
+    except Exception as e:
+        print(f"Error saving ledger to database: {str(e)}")
     
-    return ledger_path
+    return engine
+
+def save_model_to_pkl(base_learner: BaseLearner, model_name: str, config: Dict[str, Any], suffix: str = ""):
+    """Save trained model as .pkl file in the same folder as the database"""
+    symbol = config['data']['symbol'].lower()
+    time_horizon = config['data']['time_horizon']
+    
+    # Create folder structure: trainer/symbol/time_horizon/clean_model_name/
+    clean_name = clean_model_name(model_name)
+    trainer_base = os.path.join("trainer", symbol, time_horizon, clean_name)
+    os.makedirs(trainer_base, exist_ok=True)
+    
+    # Create model file path
+    model_filename = f"{clean_name}{suffix}.pkl"
+    model_path = os.path.join(trainer_base, model_filename)
+    
+    try:
+        # Get the trained model
+        if model_name in base_learner.trained_models:
+            model = base_learner.trained_models[model_name]
+            model.save_model(model_path)
+            print(f"Model saved to: {model_path}")
+            return model_path
+        else:
+            print(f"Model {model_name} not found in trained models")
+            return None
+    except Exception as e:
+        print(f"Error saving model {model_name}: {str(e)}")
+        return None
 
 def optimize_model(base_learner: BaseLearner, data: pd.DataFrame, model_name: str, 
                   initial_capital: float, config: Dict[str, Any], n_trials: int = 100) -> Dict[str, Any]:
@@ -157,27 +419,45 @@ def optimize_model(base_learner: BaseLearner, data: pd.DataFrame, model_name: st
     symbol = config['data']['symbol'].lower()
     time_horizon = config['data']['time_horizon']
     
-    # Create folder structure: trainer/symbol/time_horizon/model_name/
-    trainer_base = os.path.join("trainer", symbol, time_horizon, model_name)
+    # Create folder structure: trainer/symbol/time_horizon/clean_model_name/
+    clean_name = clean_model_name(model_name)
+    trainer_base = os.path.join("trainer", symbol, time_horizon, clean_name)
     os.makedirs(trainer_base, exist_ok=True)
     
-    # Create SQLite database for this model
-    db_path = os.path.join(trainer_base, f"{model_name}_trials.db")
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    # Get PostgreSQL engine
+    engine = get_pg_engine()
     
-    # Drop existing table and recreate to avoid UNIQUE constraint issues
-    cursor.execute('DROP TABLE IF EXISTS optimization_trials')
-    cursor.execute('''
-        CREATE TABLE optimization_trials (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+    # Create ml_trials schema and table for this model
+    trials_table_name = f"{clean_name}_trials"
+    
+    try:
+        # Create ml_trials schema if it doesn't exist
+        with engine.connect() as conn:
+            conn.execute(text("CREATE SCHEMA IF NOT EXISTS ml_trials"))
+            conn.commit()
+        
+        # Create trials table if it doesn't exist
+        create_trials_table_sql = f'''
+        CREATE TABLE IF NOT EXISTS ml_trials.{trials_table_name} (
             trial_id INTEGER,
             parameters TEXT,
-            pnl REAL,
-            timestamp TEXT
+            pnl DOUBLE PRECISION,
+            datetime TIMESTAMP
         )
-    ''')
-    conn.commit()
+        '''
+        
+        with engine.connect() as conn:
+            conn.execute(text(create_trials_table_sql))
+            conn.commit()
+        
+        # Clear existing trials for this model
+        with engine.connect() as conn:
+            conn.execute(text(f'DELETE FROM ml_trials.{trials_table_name}'))
+            conn.commit()
+        
+    except Exception as e:
+        print(f"Error setting up trials table: {str(e)}")
+        return {'error': str(e)}
     
     def objective(trial):
         # Get parameter ranges for the model
@@ -202,18 +482,26 @@ def optimize_model(base_learner: BaseLearner, data: pd.DataFrame, model_name: st
             # Train model with suggested parameters
             val_loss = base_learner.train_model(model_name, data, params)
             
-            # Generate signals
-            signals = base_learner.generate_signals(model_name, data, params)
+            # Generate signals with start_date from config
+            signals = base_learner.generate_signals(model_name, data, params, config['data']['start_date'])
             
             # Run backtest
             pnl = run_backtest(data, signals, initial_capital)
             
             # Store trial results in database
-            cursor.execute('''
-                INSERT INTO optimization_trials (trial_id, parameters, pnl, timestamp)
-                VALUES (?, ?, ?, ?)
-            ''', (trial.number, json.dumps(params), pnl, datetime.now().isoformat()))
-            conn.commit()
+            insert_query = text(f'''
+                INSERT INTO ml_trials.{trials_table_name} (trial_id, parameters, pnl, datetime)
+                VALUES (:trial_id, :parameters, :pnl, :datetime)
+            ''')
+            
+            with engine.connect() as conn:
+                conn.execute(insert_query, {
+                    'trial_id': trial.number,
+                    'parameters': json.dumps(params),
+                    'pnl': round(pnl, 2),
+                    'datetime': datetime.now()
+                })
+                conn.commit()
             
             # Return PnL for maximization
             return pnl
@@ -238,11 +526,17 @@ def optimize_model(base_learner: BaseLearner, data: pd.DataFrame, model_name: st
         base_learner.train_model(model_name, data, best_params)
         
         # Generate signals with best parameters
-        best_signals = base_learner.generate_signals(model_name, data, best_params)
+        best_signals = base_learner.generate_signals(model_name, data, best_params, config['data']['start_date'])
         
         # Save best signals and ledger
-        save_signals_to_csv(data, best_signals, f"{model_name}_best", config)
-        save_ledger_to_csv(data, best_signals, f"{model_name}_best", config)
+        save_signals_to_db(data, best_signals, model_name, config)
+        save_ledger_to_db(data, best_signals, model_name, config)
+        
+        # Update database summary
+        create_database_summary(config)
+        
+        # Save the best model
+        save_model_to_pkl(base_learner, model_name, config, "_best")
         
     except Exception as e:
         print(f"Error saving best trial signals for {model_name}: {str(e)}")
@@ -254,15 +548,14 @@ def optimize_model(base_learner: BaseLearner, data: pd.DataFrame, model_name: st
         'best_pnl': best_value,
         'optimization_date': datetime.now().isoformat(),
         'n_trials': len(study.trials),
-        'db_path': db_path
+        'trials_table': f'ml_trials.{trials_table_name}'
     }
     
     print(f"Optimization completed for {model_name}")
     print(f"Best PnL: {best_value:.2f}")
     print(f"Best parameters: {best_params}")
-    print(f"Results stored in: {db_path}")
+    print(f"Results stored in: ml_trials.{trials_table_name}")
     
-    conn.close()
     return best_results
 
 def main():
@@ -325,11 +618,6 @@ def main():
                     data = data[data.index >= start_time]
                     print(f"Filtered data to start from {start_time}")
             
-            # Limit data size for faster processing (keep last 1000 points for live-like performance)
-            if len(data) > 1000:
-                data = data.tail(1000)
-                print(f"Limited data to last 1000 points for faster processing")
-            
             print(f"Data loaded successfully: {len(data)} data points")
             
             # Safely print date range
@@ -362,7 +650,7 @@ def main():
         
         # Generate signals for all models
         print("\n=== Generating Signals ===")
-        signals = base_learner.generate_all_signals(data, model_params)
+        signals = base_learner.generate_all_signals(data, model_params, config['data']['start_date'])
         
         # Run backtest for each model
         print("\n=== Running Backtests ===")
@@ -375,10 +663,6 @@ def main():
                 backtest_results[model_name] = results
                 print(f"  PnL: {results:.2f}")
                 print(f"  Total Return: {results / backtest_config['initial_capital']:.2%}")
-                
-                # Save signals and ledger for verification
-                save_signals_to_csv(data, model_signals, model_name, config)
-                save_ledger_to_csv(data, model_signals, model_name, config)
                 
             except Exception as e:
                 print(f"  Error in backtest for {model_name}: {str(e)}")
@@ -412,6 +696,9 @@ def main():
                 print(f"{model_name}: Error - {results['error']}")
         
         print("\n=== Pipeline Completed Successfully ===")
+        
+        # Display database contents
+        display_database_contents(config)
         
     except Exception as e:
         print(f"Error in pipeline: {str(e)}")

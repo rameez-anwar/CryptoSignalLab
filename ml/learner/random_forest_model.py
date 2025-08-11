@@ -5,6 +5,8 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error
 import optuna
 from typing import Dict, Any, Tuple
+import pickle
+import os
 
 class RandomForestPricePredictor:
     def __init__(self):
@@ -83,6 +85,30 @@ class RandomForestPricePredictor:
         
         return predictions_rescaled
     
+    def save_model(self, filepath: str):
+        """Save the trained model and scaler to a file"""
+        if self.model is None:
+            raise ValueError("No model to save. Train the model first.")
+        
+        model_data = {
+            'model': self.model,
+            'scaler': self.scaler
+        }
+        
+        with open(filepath, 'wb') as f:
+            pickle.dump(model_data, f)
+    
+    def load_model(self, filepath: str):
+        """Load a trained model and scaler from a file"""
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Model file not found: {filepath}")
+        
+        with open(filepath, 'rb') as f:
+            model_data = pickle.load(f)
+        
+        self.model = model_data['model']
+        self.scaler = model_data['scaler']
+    
     def get_default_params(self) -> Dict[str, Any]:
         """Get default parameters optimized for speed"""
         return {
@@ -98,7 +124,8 @@ class RandomForestPricePredictor:
         return {
             'lookback': (30, 90),  # Reduced range
             'n_estimators': (30, 100),  # Reduced range
-            'max_depth': (4, 8),  # Reduced range
-            'min_samples_split': (5, 20),
-            'min_samples_leaf': (2, 10)
+            'max_depth': (5, 15),  # Reduced range
+            'min_samples_split': (5, 15),
+            'min_samples_leaf': (2, 8),
+            'max_features': ('sqrt', 'log2')
         } 

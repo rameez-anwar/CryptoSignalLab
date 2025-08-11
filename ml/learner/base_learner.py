@@ -12,6 +12,8 @@ from .decision_tree_model import DecisionTreePricePredictor
 from .random_forest_model import RandomForestPricePredictor
 from .xgboost_model import XGBoostPricePredictor
 from .svm_model import SVMPricePredictor
+from .lstm_model import LSTMPricePredictor
+from .gru_model import GRUPricePredictor
 
 class BaseLearner:
     def __init__(self):
@@ -21,7 +23,9 @@ class BaseLearner:
             'decision_tree_model': DecisionTreePricePredictor(),
             'random_forest_model': RandomForestPricePredictor(),
             'xgboost_model': XGBoostPricePredictor(),
-            'svm_model': SVMPricePredictor()
+            'svm_model': SVMPricePredictor(),
+            'lstm_model': LSTMPricePredictor(),
+            'gru_model': GRUPricePredictor()
         }
         self.trained_models = {}
         
@@ -60,7 +64,7 @@ class BaseLearner:
         
         return model.predict(data, sequence_length)
     
-    def generate_signals(self, model_name: str, data: pd.DataFrame, params: Dict[str, Any] = None) -> np.ndarray:
+    def generate_signals(self, model_name: str, data: pd.DataFrame, params: Dict[str, Any] = None, start_date: str = None) -> np.ndarray:
         """Generate trading signals based on model predictions"""
         predictions = self.predict_with_model(model_name, data, params)
         
@@ -73,10 +77,20 @@ class BaseLearner:
         
         lookback = params.get('lookback', 60)
         
-        # Only generate signals where we have predictions
-        # Predictions start from index 'lookback' onwards
-        # Drop the last row as per requirements
-        prediction_start_idx = lookback
+        # Determine start index for signal generation
+        if start_date:
+            # Convert start_date to datetime and find the index
+            start_datetime = pd.to_datetime(start_date)
+            start_indices = data.index >= start_datetime
+            if start_indices.any():
+                prediction_start_idx = start_indices.argmax()
+                # Ensure we don't start before lookback period
+                prediction_start_idx = max(prediction_start_idx, lookback)
+            else:
+                prediction_start_idx = lookback
+        else:
+            # Default behavior: start from lookback period
+            prediction_start_idx = lookback
         
         if len(predictions) > 0:
             # Use vectorized operations for better performance
@@ -128,14 +142,14 @@ class BaseLearner:
         
         return results
     
-    def generate_all_signals(self, data: pd.DataFrame, model_params: Dict[str, Dict[str, Any]]) -> Dict[str, np.ndarray]:
+    def generate_all_signals(self, data: pd.DataFrame, model_params: Dict[str, Dict[str, Any]], start_date: str = None) -> Dict[str, np.ndarray]:
         """Generate signals for all trained models"""
         signals = {}
         
         for model_name in self.trained_models.keys():
             if model_name in model_params:
                 try:
-                    model_signals = self.generate_signals(model_name, data, model_params[model_name])
+                    model_signals = self.generate_signals(model_name, data, model_params[model_name], start_date)
                     signals[model_name] = model_signals
                     print(f"Generated signals for {model_name}")
                 except Exception as e:
