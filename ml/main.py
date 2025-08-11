@@ -94,7 +94,7 @@ def display_database_contents(config: Dict[str, Any]):
     try:
         # Show summary table
         print("\n=== Database Summary ===")
-        summary_query = text("SELECT * FROM ml_summary.ml_summary ORDER BY created_date DESC")
+        summary_query = text("SELECT id, model_name, exchange, symbol, time_horizon, table_name, final_pnl FROM ml_summary.ml_summary ORDER BY model_name, exchange, symbol, time_horizon")
         summary_df = pd.read_sql_query(summary_query, engine)
         if len(summary_df) > 0:
             print(summary_df.to_string(index=False))
@@ -148,8 +148,9 @@ def display_database_contents(config: Dict[str, Any]):
     except Exception as e:
         print(f"Error displaying database contents: {str(e)}")
 
+
 def create_database_summary(config: Dict[str, Any]):
-    """Create a summary table to track all signals and ledger tables"""
+    """Create a summary table to track all ML ledger tables with correct parsing"""
     engine = get_pg_engine()
     
     try:
@@ -158,37 +159,27 @@ def create_database_summary(config: Dict[str, Any]):
             conn.execute(text("CREATE SCHEMA IF NOT EXISTS ml_summary"))
             conn.commit()
         
-        # Create summary table
+        # Recreate summary table with requested structure
+        drop_sql = 'DROP TABLE IF EXISTS ml_summary.ml_summary'
         create_summary_sql = '''
-        CREATE TABLE IF NOT EXISTS ml_summary.ml_summary (
+        CREATE TABLE ml_summary.ml_summary (
             id SERIAL PRIMARY KEY,
-            table_name TEXT UNIQUE,
-            table_type TEXT,
             model_name TEXT,
             exchange TEXT,
             symbol TEXT,
             time_horizon TEXT,
-            created_date TIMESTAMP,
+            table_name TEXT UNIQUE,
             final_pnl DOUBLE PRECISION
         )
         '''
         
         with engine.connect() as conn:
+            conn.execute(text(drop_sql))
             conn.execute(text(create_summary_sql))
             conn.commit()
         
-        # Get all tables in ml_signals and ml_ledger schemas
+        # Get all tables in ml_ledger schema only (summary should represent ledgers)
         with engine.connect() as conn:
-            # Get ml_signals tables
-            signals_query = text("""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'ml_signals'
-                ORDER BY table_name
-            """)
-            signals_tables = [row[0] for row in conn.execute(signals_query)]
-            
-            # Get ml_ledger tables
             ledger_query = text("""
                 SELECT table_name 
                 FROM information_schema.tables 
@@ -197,53 +188,46 @@ def create_database_summary(config: Dict[str, Any]):
             """)
             ledger_tables = [row[0] for row in conn.execute(ledger_query)]
         
-        # Update summary for each table
-        for table_name in signals_tables + ledger_tables:
-            # Parse table name to extract components: modelname_exchange_symbol_timehorizon
+        # Insert/Update summary for each ledger table
+        for table_name in ledger_tables:
             parts = table_name.split('_')
             if len(parts) >= 4:
-                table_type = 'ml_signals' if table_name in signals_tables else 'ml_ledger'
-                # The first part is the clean model name (without _model suffix)
-                model_name = parts[0]
-                exchange = parts[1]
-                symbol = parts[2]
-                time_horizon = parts[3] if len(parts) > 3 else ''
+                # Parse from the end to support model names with underscores
+                time_horizon = parts[-1]
+                symbol = parts[-2]
+                exchange = parts[-3]
+                model_name = '_'.join(parts[:-3]) if len(parts) > 3 else parts[0]
                 
                 # Get pnl_sum from ledger table (sum of pnl_percent)
                 pnl_sum = 0.0
-                if table_name in ledger_tables:
-                    try:
-                        pnl_query = text(f"SELECT COALESCE(SUM(pnl_percent), 0) FROM ml_ledger.{table_name}")
-                        with engine.connect() as conn:
-                            pnl_sum = conn.execute(pnl_query).scalar()
-                            if pnl_sum is None:
-                                pnl_sum = 0.0
-                    except:
-                        pnl_sum = 0.0
+                try:
+                    pnl_query = text(f"SELECT COALESCE(SUM(pnl_percent), 0) FROM ml_ledger.{table_name}")
+                    with engine.connect() as conn:
+                        pnl_sum = conn.execute(pnl_query).scalar()
+                        if pnl_sum is None:
+                            pnl_sum = 0.0
+                except Exception:
+                    pnl_sum = 0.0
                 
-                # Round final_pnl to 2 decimal places
                 pnl_sum = round(pnl_sum, 2)
                 
                 # Insert or update summary
-                upsert_query = text("""
+                upsert_query = text('''
                     INSERT INTO ml_summary.ml_summary 
-                    (table_name, table_type, model_name, exchange, symbol, time_horizon, created_date, final_pnl)
-                    VALUES (:table_name, :table_type, :model_name, :exchange, :symbol, :time_horizon, :created_date, :final_pnl)
+                    (model_name, exchange, symbol, time_horizon, table_name, final_pnl)
+                    VALUES (:model_name, :exchange, :symbol, :time_horizon, :table_name, :final_pnl)
                     ON CONFLICT (table_name) 
                     DO UPDATE SET 
-                        final_pnl = EXCLUDED.final_pnl,
-                        created_date = EXCLUDED.created_date
-                """)
+                        final_pnl = EXCLUDED.final_pnl
+                ''')
                 
                 with engine.connect() as conn:
                     conn.execute(upsert_query, {
                         'table_name': table_name,
-                        'table_type': table_type,
                         'model_name': model_name,
                         'exchange': exchange,
                         'symbol': symbol,
                         'time_horizon': time_horizon,
-                        'created_date': datetime.now(),
                         'final_pnl': pnl_sum
                     })
                     conn.commit()
