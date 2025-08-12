@@ -1003,6 +1003,118 @@ app.get('/api/users/:id', async (req, res) => {
   }
 });
 
+// Get all ML models from database
+app.get('/api/models', async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        id,
+        model_name,
+        exchange,
+        symbol,
+        time_horizon,
+        table_name,
+        final_pnl
+      FROM ml_summary.ml_summary 
+      ORDER BY final_pnl DESC
+    `;
+    
+    const result = await pool.query(query);
+    
+    const models = result.rows.map((row, index) => {
+      // Calculate status based on performance
+      let status = "Active";
+      if (row.final_pnl > 10) {
+        status = "Excellent";
+      } else if (row.final_pnl > 5) {
+        status = "Good";
+      } else if (row.final_pnl > 0) {
+        status = "Profitable";
+      } else if (row.final_pnl > -5) {
+        status = "Struggling";
+      } else {
+        status = "Underperforming";
+      }
+
+      return {
+        id: row.id,
+        model_name: row.model_name,
+        exchange: row.exchange,
+        symbol: row.symbol,
+        time_horizon: row.time_horizon,
+        table_name: row.table_name,
+        final_pnl: parseFloat(row.final_pnl || 0),
+        status: status
+      };
+    });
+
+    res.json({
+      success: true,
+      data: models,
+      count: models.length,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Database error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch ML models from database',
+      message: error.message
+    });
+  }
+});
+
+// Get ML model by table name
+app.get('/api/models/:tableName', async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        id,
+        model_name,
+        exchange,
+        symbol,
+        time_horizon,
+        table_name,
+        final_pnl
+      FROM ml_summary.ml_summary 
+      WHERE table_name = $1
+    `;
+    
+    const result = await pool.query(query, [req.params.tableName]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'ML model not found'
+      });
+    }
+    
+    const row = result.rows[0];
+    
+    const model = {
+      id: row.id,
+      model_name: row.model_name,
+      exchange: row.exchange,
+      symbol: row.symbol,
+      time_horizon: row.time_horizon,
+      table_name: row.table_name,
+      final_pnl: parseFloat(row.final_pnl || 0)
+    };
+    
+    res.json({
+      success: true,
+      data: model
+    });
+  } catch (error) {
+    console.error('Database error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch ML model',
+      message: error.message
+    });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
   try {

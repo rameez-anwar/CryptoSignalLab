@@ -90,7 +90,7 @@ class BaseLearner:
                 prediction_start_idx = lookback
         else:
             # Default behavior: start from lookback period
-            prediction_start_idx = lookback
+        prediction_start_idx = lookback
         
         if len(predictions) > 0:
             # Use vectorized operations for better performance

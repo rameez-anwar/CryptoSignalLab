@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { BarChart3 } from 'lucide-react';
+import { BarChart3, Brain } from 'lucide-react';
 
 const Header = ({ activePage = 'simulator' }) => {
   return (
@@ -33,6 +33,16 @@ const Header = ({ activePage = 'simulator' }) => {
               }`}
             >
               <span>Simulator</span>
+            </Link>
+            <Link
+              to="/models"
+              className={`px-6 py-3 text-sm font-semibold rounded-xl transition-all duration-300 ${
+                activePage === 'models'
+                  ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg hover:shadow-xl hover:scale-105 transform border border-purple-500/20'
+                  : 'text-blue-200 hover:text-white hover:bg-white/10 backdrop-blur-sm border border-blue-500/20'
+              }`}
+            >
+              <span>Models</span>
             </Link>
             <Link
               to="/user-management"
