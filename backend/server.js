@@ -1115,6 +1115,315 @@ app.get('/api/models/:tableName', async (req, res) => {
   }
 });
 
+// Get ML model details
+app.get('/api/models/:tableName/details', async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        id,
+        model_name,
+        exchange,
+        symbol,
+        time_horizon,
+        table_name,
+        final_pnl
+      FROM ml_summary.ml_summary 
+      WHERE table_name = $1
+    `;
+    
+    const result = await pool.query(query, [req.params.tableName]);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'ML model not found'
+      });
+    }
+    
+    const row = result.rows[0];
+    
+    const model = {
+      id: row.id,
+      model_name: row.model_name,
+      exchange: row.exchange,
+      symbol: row.symbol,
+      time_horizon: row.time_horizon,
+      table_name: row.table_name,
+      final_pnl: parseFloat(row.final_pnl || 0)
+    };
+    
+    res.json({
+      success: true,
+      data: model
+    });
+  } catch (error) {
+    console.error('Database error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch ML model details',
+      message: error.message
+    });
+  }
+});
+
+// Get ML model PNL timeseries
+app.get('/api/models/:tableName/pnl_timeseries', async (req, res) => {
+  try {
+    const tableName = req.params.tableName;
+    const query = `
+      SELECT 
+        datetime,
+        pnl_sum as pnl
+      FROM ml_ledger.${tableName}
+      ORDER BY datetime ASC
+    `;
+    
+    const result = await pool.query(query);
+    
+    const pnlData = result.rows.map(row => ({
+      date: row.datetime,
+      pnl: parseFloat(row.pnl || 0)
+    }));
+    
+    res.json({
+      success: true,
+      data: pnlData
+    });
+  } catch (error) {
+    console.error('Database error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch PNL timeseries',
+      message: error.message
+    });
+  }
+});
+
+// Get ML model win/loss data
+app.get('/api/models/:tableName/winloss', async (req, res) => {
+  try {
+    const tableName = req.params.tableName;
+    const query = `
+      SELECT 
+        pnl_percent
+      FROM ml_ledger.${tableName}
+      WHERE pnl_percent IS NOT NULL
+      ORDER BY datetime ASC
+    `;
+    
+    const result = await pool.query(query);
+    
+    const pnlValues = result.rows.map(row => parseFloat(row.pnl_percent || 0));
+    const totalTrades = pnlValues.length;
+    const wins = pnlValues.filter(pnl => pnl > 0).length;
+    const losses = pnlValues.filter(pnl => pnl < 0).length;
+    
+    const winLossData = {
+      total: totalTrades,
+      wins: {
+        count: wins,
+        percentage: totalTrades > 0 ? (wins / totalTrades) * 100 : 0
+      },
+      losses: {
+        count: losses,
+        percentage: totalTrades > 0 ? (losses / totalTrades) * 100 : 0
+      },
+      individualPnl: pnlValues
+    };
+    
+    res.json({
+      success: true,
+      data: winLossData
+    });
+  } catch (error) {
+    console.error('Database error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch win/loss data',
+      message: error.message
+    });
+  }
+});
+
+// Get ML model metrics
+app.get('/api/models/:tableName/metrics', async (req, res) => {
+  try {
+    const tableName = req.params.tableName;
+    
+    // Get metrics from stats.ml_stats table
+    const query = `
+      SELECT *
+      FROM stats.ml_stats
+      WHERE strategy_name = $1
+    `;
+    
+    const result = await pool.query(query, [tableName]);
+    
+    if (result.rows.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          performance: {},
+          risk: {},
+          trade: {},
+          profitability: {},
+          statistical: {},
+          monthlyWeekly: {}
+        }
+      });
+    }
+    
+    const row = result.rows[0];
+    
+    // Transform the data to match the expected structure
+    const metricsData = {
+      performance: {
+        totalReturn: parseFloat(row.total_return || 0),
+        dailyReturn: parseFloat(row.daily_return || 0),
+        weeklyReturn: parseFloat(row.weekly_return || 0),
+        monthlyReturn: parseFloat(row.monthly_return || 0),
+        cagr: parseFloat(row.cagr || 0),
+        sharpeRatio: parseFloat(row.sharpe_ratio || 0),
+        sortinoRatio: parseFloat(row.sortino_ratio || 0),
+        calmarRatio: parseFloat(row.calmar_ratio || 0),
+        alpha: parseFloat(row.alpha || 0),
+        beta: parseFloat(row.beta || 0),
+        r2: parseFloat(row.r2 || 0),
+        informationRatio: parseFloat(row.information_ratio || 0),
+        treynorRatio: parseFloat(row.treynor_ratio || 0),
+        profitFactor: parseFloat(row.profit_factor || 0),
+        omegaRatio: parseFloat(row.omega_ratio || 0),
+        gainToPainRatio: parseFloat(row.gain_to_pain_ratio || 0),
+        payoffRatio: parseFloat(row.payoff_ratio || 0),
+        cpcRatio: parseFloat(row.cpc_ratio || 0),
+        riskReturnRatio: parseFloat(row.risk_return_ratio || 0),
+        commonSenseRatio: parseFloat(row.common_sense_ratio || 0)
+      },
+      risk: {
+        maxDrawdown: parseFloat(row.max_drawdown || 0),
+        maxDrawdownDays: parseFloat(row.max_drawdown_days || 0),
+        avgDrawdown: parseFloat(row.avg_drawdown || 0),
+        avgDrawdownDays: parseFloat(row.avg_drawdown_days || 0),
+        currentDrawdown: parseFloat(row.current_drawdown || 0),
+        currentDrawdownDays: parseFloat(row.current_drawdown_days || 0),
+        drawdownDuration: parseFloat(row.drawdown_duration || 0),
+        conditionalDrawdownAtRisk: parseFloat(row.conditional_drawdown_at_risk || 0),
+        ulcerIndex: parseFloat(row.ulcer_index || 0),
+        riskOfRuin: parseFloat(row.risk_of_ruin || 0),
+        var_95: parseFloat(row.var_95 || 0),
+        cvar_95: parseFloat(row.cvar_99 || 0), // Using cvar_99 as cvar_95
+        downsideDeviation: parseFloat(row.downside_deviation || 0),
+        volatility: parseFloat(row.volatility || 0),
+        annualizedVolatility: parseFloat(row.annualized_volatility || 0)
+      },
+      trade: {
+        numberOfTrades: parseFloat(row.number_of_trades || 0),
+        winRate: parseFloat(row.win_rate || 0),
+        lossRate: parseFloat(row.loss_rate || 0),
+        averageWin: parseFloat(row.average_win || 0),
+        averageLoss: parseFloat(row.average_loss || 0),
+        averageTradeDuration: parseFloat(row.average_trade_duration || 0),
+        largestWin: parseFloat(row.largest_win || 0),
+        largestLoss: parseFloat(row.largest_loss || 0),
+        consecutiveWins: parseFloat(row.consecutive_wins || 0),
+        consecutiveLosses: parseFloat(row.consecutive_losses || 0),
+        avgTradeReturn: parseFloat(row.avg_trade_return || 0),
+        profitabilityPerTrade: parseFloat(row.profitability_per_trade || 0),
+        commonSenseRatio: parseFloat(row.common_sense_ratio || 0),
+        recoveryFactor: parseFloat(row.recovery_factor || 0)
+      },
+      profitability: {
+        totalProfit: parseFloat(row.total_profit || 0),
+        totalLoss: parseFloat(row.total_loss || 0),
+        netProfit: parseFloat(row.net_profit || 0),
+        riskReturnRatio: parseFloat(row.risk_return_ratio || 0),
+        commonSenseRatio: parseFloat(row.common_sense_ratio || 0),
+        conditionalDrawdownAtRisk: parseFloat(row.conditional_drawdown_at_risk || 0),
+        avgProfitPerTrade: parseFloat(row.avg_profit_per_trade || 0),
+        avgLossPerTrade: parseFloat(row.avg_loss_per_trade || 0),
+        profitLossRatio: parseFloat(row.profit_loss_ratio || 0)
+      },
+      statistical: {
+        skewness: parseFloat(row.skewness || 0),
+        kurtosis: parseFloat(row.kurtosis || 0)
+      },
+      monthlyWeekly: {
+        winningWeeks: parseFloat(row.winning_weeks || 0),
+        losingWeeks: parseFloat(row.losing_weeks || 0),
+        winningMonths: parseFloat(row.winning_months || 0),
+        losingMonths: parseFloat(row.losing_months || 0),
+        positiveMonthsPercent: parseFloat(row.winning_months_percent || 0),
+        negativeMonthsPercent: parseFloat(row.negative_months_percent || 0)
+      }
+    };
+    
+    res.json({
+      success: true,
+      data: metricsData
+    });
+  } catch (error) {
+    console.error('Database error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch metrics data',
+      message: error.message
+    });
+  }
+});
+
+// Get ML model ledger
+app.get('/api/models/:tableName/ledger', async (req, res) => {
+  try {
+    const tableName = req.params.tableName;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 100;
+    const offset = (page - 1) * limit;
+    
+    const query = `
+      SELECT 
+        datetime,
+        action,
+        buy_price,
+        sell_price,
+        pnl_percent,
+        pnl_sum,
+        balance
+      FROM ml_ledger.${tableName}
+      ORDER BY datetime DESC
+      LIMIT $1 OFFSET $2
+    `;
+    
+    const result = await pool.query(query, [limit, offset]);
+    
+    const ledger = result.rows.map(row => ({
+      datetime: row.datetime,
+      action: row.action,
+      buy_price: parseFloat(row.buy_price || 0),
+      sell_price: parseFloat(row.sell_price || 0),
+      pnl_percent: parseFloat(row.pnl_percent || 0),
+      pnl_sum: parseFloat(row.pnl_sum || 0),
+      balance: parseFloat(row.balance || 0)
+    }));
+    
+    res.json({
+      success: true,
+      data: {
+        ledger: ledger,
+        page: page,
+        limit: limit,
+        total: ledger.length
+      }
+    });
+  } catch (error) {
+    console.error('Database error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch ledger data',
+      message: error.message
+    });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
   try {

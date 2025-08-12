@@ -103,10 +103,25 @@ def calculate_drawdowns(pnl_sum_series):
             'drawdown_duration': 0, 'conditional_drawdown_at_risk': 0
         }
     
-    cumulative = pnl_sum_series
+    # Convert to numeric and handle any NaN values
+    cumulative = pd.to_numeric(pnl_sum_series, errors='coerce').fillna(0)
+    
+    # Calculate running maximum (peak)
     running_max = cumulative.expanding().max()
-    drawdown = (cumulative - running_max) / running_max * 100
+    
+    # Calculate drawdown as percentage from peak
+    # If running_max is 0, avoid division by zero
+    drawdown = np.where(running_max != 0, 
+                       (cumulative - running_max) / running_max * 100, 
+                       0)
+    
+    # Convert back to pandas series for consistency
+    drawdown = pd.Series(drawdown, index=cumulative.index)
+    
+    # Find maximum drawdown (most negative value)
     max_drawdown = drawdown.min()
+    
+    # Calculate drawdown periods
     drawdown_periods = []
     current_drawdown_start = None
     current_drawdown_days = 0
@@ -121,6 +136,10 @@ def calculate_drawdowns(pnl_sum_series):
                 drawdown_periods.append(current_drawdown_days)
                 current_drawdown_start = None
                 current_drawdown_days = 0
+    
+    # If we're still in a drawdown at the end
+    if current_drawdown_start is not None:
+        drawdown_periods.append(current_drawdown_days)
     
     current_drawdown = drawdown.iloc[-1] if len(drawdown) > 0 else 0
     avg_drawdown = drawdown[drawdown < 0].mean() if len(drawdown[drawdown < 0]) > 0 else 0
@@ -146,17 +165,37 @@ def calculate_risk_metrics(pnl_percent_series):
             'downside_deviation': 0, 'volatility': 0, 'annualized_volatility': 0
         }
     
+    # Convert to numeric and handle any NaN values
+    pnl_percent_series = pd.to_numeric(pnl_percent_series, errors='coerce').fillna(0)
+    
     returns = pnl_percent_series / 100
+    
+    # Calculate cumulative returns for drawdown calculation
     cumulative = pnl_percent_series.cumsum()
     running_max = cumulative.expanding().max()
-    drawdown = (cumulative - running_max) / running_max
+    
+    # Calculate drawdown as percentage from peak
+    # If running_max is 0, avoid division by zero
+    drawdown = np.where(running_max != 0, 
+                       (cumulative - running_max) / running_max, 
+                       0)
+    
+    # Calculate ulcer index (square root of average squared drawdown)
     ulcer_index = np.sqrt(np.mean(drawdown ** 2)) * 100
+    
+    # Calculate win rate and risk of ruin
     win_rate = len(pnl_percent_series[pnl_percent_series > 0]) / len(pnl_percent_series) if len(pnl_percent_series) > 0 else 0
-    risk_of_ruin = (1 - win_rate) ** 10
+    risk_of_ruin = (1 - win_rate) ** 10 if win_rate < 1 else 0
+    
+    # Calculate VaR and CVaR
     var_95 = returns.quantile(0.05) * 100
-    cvar_99 = returns[returns <= returns.quantile(0.01)].mean() * 100
+    cvar_99 = returns[returns <= returns.quantile(0.01)].mean() * 100 if len(returns) > 0 else 0
+    
+    # Calculate downside deviation
     downside_returns = returns[returns < 0]
     downside_deviation = downside_returns.std() * 100 if len(downside_returns) > 0 else 0
+    
+    # Calculate volatility
     volatility = returns.std() * 100
     annualized_volatility = volatility * np.sqrt(252)
     
@@ -226,19 +265,31 @@ def calculate_profitability_metrics(pnl_percent_series):
     """Calculate profitability metrics from individual PnL percentages"""
     if len(pnl_percent_series) == 0:
         return {
-            'total_profit': 0, 'net_profit': 0, 'avg_profit_per_trade': 0,
+            'total_profit': 0, 'total_loss': 0, 'net_profit': 0, 'avg_profit_per_trade': 0,
             'avg_loss_per_trade': 0, 'profit_loss_ratio': 0
         }
     
+    # Convert to numeric and handle any NaN values
+    pnl_percent_series = pd.to_numeric(pnl_percent_series, errors='coerce').fillna(0)
+    
+    # Calculate total profit and loss
     total_profit = pnl_percent_series[pnl_percent_series > 0].sum()
-    total_loss = abs(pnl_percent_series[pnl_percent_series < 0].sum())
+    total_loss = pnl_percent_series[pnl_percent_series < 0].sum()  # Keep as negative
     net_profit = pnl_percent_series.sum()
-    avg_profit_per_trade = pnl_percent_series[pnl_percent_series > 0].mean() if len(pnl_percent_series[pnl_percent_series > 0]) > 0 else 0
-    avg_loss_per_trade = pnl_percent_series[pnl_percent_series < 0].mean() if len(pnl_percent_series[pnl_percent_series < 0]) > 0 else 0
-    profit_loss_ratio = total_profit / total_loss if total_loss > 0 else 0
+    
+    # Calculate averages
+    winning_trades = pnl_percent_series[pnl_percent_series > 0]
+    losing_trades = pnl_percent_series[pnl_percent_series < 0]
+    
+    avg_profit_per_trade = winning_trades.mean() if len(winning_trades) > 0 else 0
+    avg_loss_per_trade = losing_trades.mean() if len(losing_trades) > 0 else 0
+    
+    # Calculate profit/loss ratio (use absolute values for ratio)
+    profit_loss_ratio = total_profit / abs(total_loss) if total_loss != 0 else 0
     
     return {
         'total_profit': total_profit,
+        'total_loss': total_loss,  # Keep as negative value
         'net_profit': net_profit,
         'avg_profit_per_trade': avg_profit_per_trade,
         'avg_loss_per_trade': avg_loss_per_trade,
@@ -256,7 +307,16 @@ def calculate_trade_metrics(df):
             'recovery_factor': 0
         }
     
-    completed_trades = df[df['action'].isin(['tp', 'sl', 'direction_change'])]
+    # For ML models, we need to handle different action types
+    # Look for completed trades (tp, sl, direction_change) or any non-null pnl_percent
+    if 'action' in df.columns:
+        completed_trades = df[df['action'].isin(['tp', 'sl', 'direction_change'])]
+        if completed_trades.empty:
+            # If no specific actions found, use all rows with pnl_percent
+            completed_trades = df[df['pnl_percent'].notna() & (df['pnl_percent'] != 0)]
+    else:
+        # For ML models without action column, use all rows with pnl_percent
+        completed_trades = df[df['pnl_percent'].notna() & (df['pnl_percent'] != 0)]
     
     if completed_trades.empty:
         return {
@@ -267,16 +327,34 @@ def calculate_trade_metrics(df):
             'recovery_factor': 0
         }
     
-    pnl_percent_series = completed_trades['pnl_percent']
-    number_of_trades = len(completed_trades)
+    # Convert pnl_percent to numeric and handle NaN values
+    pnl_percent_series = pd.to_numeric(completed_trades['pnl_percent'], errors='coerce').fillna(0)
+    
+    # Filter out transaction fees or very small values that might be noise
+    pnl_percent_series = pnl_percent_series[abs(pnl_percent_series) > 0.01]
+    
+    if len(pnl_percent_series) == 0:
+        return {
+            'number_of_trades': 0, 'win_rate': 0, 'loss_rate': 0,
+            'average_win': 0, 'average_loss': 0, 'average_trade_duration': 0,
+            'largest_win': 0, 'largest_loss': 0, 'consecutive_wins': 0,
+            'consecutive_losses': 0, 'avg_trade_return': 0, 'profitability_per_trade': 0,
+            'recovery_factor': 0
+        }
+    
+    number_of_trades = len(pnl_percent_series)
     winning_trades = pnl_percent_series[pnl_percent_series > 0]
     losing_trades = pnl_percent_series[pnl_percent_series < 0]
+    
     win_rate = (len(winning_trades) / number_of_trades) * 100 if number_of_trades > 0 else 0
     loss_rate = (len(losing_trades) / number_of_trades) * 100 if number_of_trades > 0 else 0
+    
     average_win = winning_trades.mean() if len(winning_trades) > 0 else 0
     average_loss = losing_trades.mean() if len(losing_trades) > 0 else 0
     largest_win = winning_trades.max() if len(winning_trades) > 0 else 0
     largest_loss = losing_trades.min() if len(losing_trades) > 0 else 0
+    
+    # Calculate consecutive wins/losses
     consecutive_wins = 0
     max_consecutive_wins = 0
     current_wins = 0
@@ -296,8 +374,11 @@ def calculate_trade_metrics(df):
     
     consecutive_wins = max_consecutive_wins
     consecutive_losses = max_consecutive_losses
+    
     avg_trade_return = pnl_percent_series.mean() if len(pnl_percent_series) > 0 else 0
     profitability_per_trade = (pnl_percent_series[pnl_percent_series > 0].sum() / number_of_trades) if number_of_trades > 0 else 0
+    
+    # Calculate recovery factor
     max_drawdown = calculate_drawdowns(pnl_percent_series.cumsum())['max_drawdown']
     recovery_factor = (pnl_percent_series.sum() / abs(max_drawdown)) if max_drawdown < 0 else 0
     
@@ -307,7 +388,7 @@ def calculate_trade_metrics(df):
         'loss_rate': loss_rate,
         'average_win': average_win,
         'average_loss': average_loss,
-        'average_trade_duration': 0.52,
+        'average_trade_duration': 0.52,  # Placeholder
         'largest_win': largest_win,
         'largest_loss': largest_loss,
         'consecutive_wins': consecutive_wins,

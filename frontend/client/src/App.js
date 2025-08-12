@@ -3,6 +3,7 @@ import axios from 'axios';
 import { BrowserRouter as Router, Routes, Route, useNavigate, useParams, Link } from 'react-router-dom';
 import { TrendingUp, TrendingDown, AlertCircle, BarChart3, Search, Filter, ChevronLeft, ChevronRight, X, Users, ChevronUp, ChevronDown, Brain } from 'lucide-react';
 import StrategyDetail from './StrategyDetail';
+import ModelDetail from './ModelDetail';
 import UserManagement from './UserManagement';
 import Header from './components/Header';
 import './App.css';
@@ -1199,34 +1200,34 @@ function ModelsList() {
             <div className="flex items-center justify-between">
               <div className="text-sm text-gray-700">
                 Showing <span className="font-medium text-purple-600">{indexOfFirstRecord + 1}</span> to <span className="font-medium text-purple-600">{Math.min(indexOfLastRecord, sortedModels.length)}</span> of <span className="font-medium text-purple-600">{sortedModels.length}</span> results
-              </div>
-            
-              <div className="flex items-center space-x-2">
-                <button
-                  onClick={handlePreviousPage}
-                  disabled={currentPage === 1}
-                  className="px-4 py-2 text-sm font-medium rounded-lg text-gray-700 hover:bg-gray-50 hover:shadow-sm disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-2 border border-gray-200"
-                >
-                  <ChevronLeft className="h-4 w-4" />
-                  <span>Previous</span>
-                </button>
-                
-                <div className="flex items-center space-x-1">
-                  {renderPageNumbers()}
                 </div>
-                
-                <button
-                  onClick={handleNextPage}
-                  disabled={currentPage === totalPages}
+              
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={handlePreviousPage}
+                    disabled={currentPage === 1}
                   className="px-4 py-2 text-sm font-medium rounded-lg text-gray-700 hover:bg-gray-50 hover:shadow-sm disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-2 border border-gray-200"
-                >
-                  <span>Next</span>
-                  <ChevronRight className="h-4 w-4" />
-                </button>
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    <span>Previous</span>
+                  </button>
+                  
+                  <div className="flex items-center space-x-1">
+                  {renderPageNumbers()}
+                  </div>
+                  
+                  <button
+                    onClick={handleNextPage}
+                    disabled={currentPage === totalPages}
+                  className="px-4 py-2 text-sm font-medium rounded-lg text-gray-700 hover:bg-gray-50 hover:shadow-sm disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center space-x-2 border border-gray-200"
+                  >
+                    <span>Next</span>
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
       </main>
     </div>
   );
@@ -1258,27 +1259,7 @@ function ModelDetailWithRouter() {
     navigate('/models');
   };
 
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <Header activePage="models" />
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8">
-          <div className="flex items-center mb-6">
-            <button
-              onClick={handleBack}
-              className="flex items-center space-x-2 text-gray-600 hover:text-gray-900 transition-colors"
-            >
-              <ChevronLeft className="w-5 h-5" />
-              <span>Back to Models</span>
-            </button>
-          </div>
-          <h1 className="text-2xl font-bold text-gray-900 mb-4">Model Details</h1>
-          <p className="text-gray-600">Model: {tableName}</p>
-          <p className="text-gray-500 mt-2">Detailed view coming soon...</p>
-        </div>
-      </main>
-    </div>
-  );
+  return <ModelDetail tableName={tableName} onBack={handleBack} />;
 }
 
 // Main App Component

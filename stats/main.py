@@ -66,6 +66,7 @@ def create_stats_schema_and_table(cursor, table_type="strategy"):
             winning_months_percent DECIMAL(10,4),
             negative_months_percent DECIMAL(10,4),
             total_profit DECIMAL(10,4),
+            total_loss DECIMAL(10,4),
             net_profit DECIMAL(10,4),
             avg_profit_per_trade DECIMAL(10,4),
             avg_loss_per_trade DECIMAL(10,4),
