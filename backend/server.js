@@ -1375,10 +1375,17 @@ app.get('/api/models/:tableName/metrics', async (req, res) => {
 app.get('/api/models/:tableName/ledger', async (req, res) => {
   try {
     const tableName = req.params.tableName;
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 100;
-    const offset = (page - 1) * limit;
     
+    // First, get the total count
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM ml_ledger.${tableName}
+    `;
+    
+    const countResult = await pool.query(countQuery);
+    const totalRecords = parseInt(countResult.rows[0].total);
+    
+    // Get all records from the ledger
     const query = `
       SELECT 
         datetime,
@@ -1389,11 +1396,10 @@ app.get('/api/models/:tableName/ledger', async (req, res) => {
         pnl_sum,
         balance
       FROM ml_ledger.${tableName}
-      ORDER BY datetime DESC
-      LIMIT $1 OFFSET $2
+      ORDER BY datetime ASC
     `;
     
-    const result = await pool.query(query, [limit, offset]);
+    const result = await pool.query(query);
     
     const ledger = result.rows.map(row => ({
       datetime: row.datetime,
@@ -1409,9 +1415,8 @@ app.get('/api/models/:tableName/ledger', async (req, res) => {
       success: true,
       data: {
         ledger: ledger,
-        page: page,
-        limit: limit,
-        total: ledger.length
+        total: totalRecords,
+        totalPages: 1
       }
     });
   } catch (error) {

@@ -20,11 +20,12 @@ class DecisionTreePricePredictor:
         scaled_features = self.scaler.fit_transform(features)
         
         X, y = [], []
-        for i in range(lookback, len(scaled_features)):
+        for i in range(lookback, len(scaled_features) - 1):  # -1 to avoid predicting beyond available data
             # Flatten the lookback window
             window = scaled_features[i-lookback:i].flatten()
             X.append(window)
-            y.append(scaled_features[i, 3])  # Close price
+            # Predict the next close price instead of current
+            y.append(scaled_features[i + 1, 3])  # Next close price
             
         return np.array(X), np.array(y)
     

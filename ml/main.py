@@ -349,6 +349,7 @@ def save_ledger_to_db(data: pd.DataFrame, signals: np.ndarray, model_name: str, 
             conn.execute(text(f'DELETE FROM ml_ledger.{table_name}'))
             conn.commit()
         
+        # Insert results
         if len(results_df) > 0:
             # Round values to 2 decimal places
             results_df_rounded = results_df.round(2)
@@ -485,7 +486,7 @@ def optimize_model(base_learner: BaseLearner, data: pd.DataFrame, model_name: st
                     'pnl': round(pnl, 2),
                     'datetime': datetime.now()
                 })
-                conn.commit()
+            conn.commit()
             
             # Return PnL for maximization
             return pnl
@@ -603,6 +604,7 @@ def main():
                     print(f"Filtered data to start from {start_time}")
             
             print(f"Data loaded successfully: {len(data)} data points")
+            print(f"Using FULL dataset from database - no sampling or limitations")
             
             # Safely print date range
             try:
@@ -635,6 +637,26 @@ def main():
         # Generate signals for all models
         print("\n=== Generating Signals ===")
         signals = base_learner.generate_all_signals(data, model_params, config['data']['start_date'])
+        
+        # Debug: Print signal statistics
+        for model_name, model_signals in signals.items():
+            if len(model_signals) > 0:
+                buy_signals = np.sum(model_signals == 1)
+                sell_signals = np.sum(model_signals == -1)
+                hold_signals = np.sum(model_signals == 0)
+                total_signals = len(model_signals)
+                
+                print(f"{model_name} signals:")
+                print(f"  Buy signals: {buy_signals} ({buy_signals/total_signals*100:.1f}%)")
+                print(f"  Sell signals: {sell_signals} ({sell_signals/total_signals*100:.1f}%)")
+                print(f"  Hold signals: {hold_signals} ({hold_signals/total_signals*100:.1f}%)")
+                print(f"  Total signals: {total_signals}")
+                
+                # Check if we have any trading signals
+                if buy_signals == 0 and sell_signals == 0:
+                    print(f"  WARNING: No trading signals generated for {model_name}!")
+                else:
+                    print(f"  Trading signals generated successfully for {model_name}")
         
         # Run backtest for each model
         print("\n=== Running Backtests ===")

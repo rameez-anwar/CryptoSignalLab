@@ -90,23 +90,43 @@ class BaseLearner:
                 prediction_start_idx = lookback
         else:
             # Default behavior: start from lookback period
-        prediction_start_idx = lookback
+            prediction_start_idx = lookback
         
         if len(predictions) > 0:
             # Use vectorized operations for better performance
             # Exclude the last row from signal generation
             max_valid_idx = len(data) - 1
             valid_indices = np.arange(prediction_start_idx, min(prediction_start_idx + len(predictions), max_valid_idx))
+            
             if len(valid_indices) > 0:
+                # Get actual close prices for comparison
                 actual_closes = data.iloc[valid_indices]['close'].values
                 pred_values = predictions[:len(valid_indices)]
                 
-                # Signal generation according to requirements:
-                # If new close (predicted) > close → 1 (buy)
-                # If new close (predicted) < close → -1 (sell)  
-                # If new close (predicted) == close → 0 (hold)
-                signals[valid_indices] = np.where(pred_values > actual_closes, 1, 
-                                                np.where(pred_values < actual_closes, -1, 0))
+                # Calculate percentage change from current price to predicted future price
+                percent_change = (pred_values - actual_closes) / actual_closes
+                
+                # Use a reasonable threshold for signal generation
+                # This threshold determines how confident we need to be to generate a signal
+                threshold = 0.003  # 0.3% threshold - more conservative for better results
+                
+                # Generate signals:
+                # 1. If predicted future price is significantly higher than current price, buy (signal = 1)
+                # 2. If predicted future price is significantly lower than current price, sell (signal = -1)
+                # 3. Otherwise, hold (signal = 0)
+                
+                signals[valid_indices] = np.where(percent_change > threshold, 1,
+                                                np.where(percent_change < -threshold, -1, 0))
+                
+                # Add signal smoothing to reduce noise and prevent excessive trading
+                # Only change signals if the prediction confidence is high enough
+                for i in range(1, len(valid_indices)):
+                    if signals[valid_indices[i]] != 0 and signals[valid_indices[i-1]] != 0:
+                        # If we have consecutive non-zero signals, only change if the change is significant
+                        if signals[valid_indices[i]] != signals[valid_indices[i-1]]:
+                            # Require a higher threshold for signal reversal to prevent whipsaws
+                            if abs(percent_change[i]) < threshold * 1.5:
+                                signals[valid_indices[i]] = signals[valid_indices[i-1]]
         
         return signals
     

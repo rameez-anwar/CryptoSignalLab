@@ -14,12 +14,13 @@ class XGBoostPricePredictor:
         self.scaler = MinMaxScaler()
         
     def prepare_data(self, data: pd.DataFrame, lookback: int = 60) -> Tuple[np.ndarray, np.ndarray]:
-        """Prepare OHLC data for XGBoost training using vectorized operations"""
+        """Prepare OHLC data for XGBoost training with vectorized operations"""
+        # Use OHLC features
         features = data[['open', 'high', 'low', 'close']].values
         scaled_features = self.scaler.fit_transform(features)
 
         # Use vectorized operations for better performance
-        n_samples = len(scaled_features) - lookback
+        n_samples = len(scaled_features) - lookback - 1  # -1 to avoid predicting beyond available data
         if n_samples <= 0:
             return np.array([]), np.array([])
             
@@ -28,7 +29,7 @@ class XGBoostPricePredictor:
         
         for i in range(n_samples):
             X[i] = scaled_features[i:i+lookback].flatten()
-            y[i] = scaled_features[i+lookback, 3]  # Close price
+            y[i] = scaled_features[i+lookback+1, 3]  # Next close price
 
         return X, y
     
