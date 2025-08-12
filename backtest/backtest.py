@@ -1,7 +1,7 @@
 import pandas as pd
 
 class Backtester:
-    def __init__(self, ohlcv_df, signals_df, tp=0.05, sl=0.03, initial_balance=1000, fee_percent=0.0005):
+    def __init__(self, ohlcv_df, signals_df, tp=0.05, sl=0.03, initial_balance=1000, fee_percent=0.0005, min_balance=500):
         self.ohlcv = ohlcv_df.copy()
         self.signals = signals_df.copy()
         self.tp = tp
@@ -10,6 +10,8 @@ class Backtester:
         self.initial_balance = initial_balance
         self.fee_percent = fee_percent
         self.position_size = initial_balance  # Will be updated to current balance per trade
+        self.min_balance = min_balance  # Minimum balance threshold to stop backtest
+        self.backtest_stopped = False  # Flag to track if backtest was stopped due to low balance
 
     def merge_data(self):
         df = self.ohlcv.copy()
@@ -31,6 +33,15 @@ class Backtester:
         df = df.set_index('datetime')
         return df
 
+    def check_balance_protection(self, current_time, action="", entry_price=0, exit_price=0):
+        """Check if balance has fallen below minimum threshold and stop backtest if needed"""
+        if self.balance <= self.min_balance and not self.backtest_stopped:
+            self.backtest_stopped = True
+            print(f"⚠️  BACKTEST STOPPED: Balance ({self.balance:.2f}) reached minimum threshold ({self.min_balance})")
+            print(f"   Last action: {action} | Entry: {entry_price:.2f} | Exit: {exit_price:.2f} | Time: {current_time}")
+            return True
+        return False
+
     def run(self):
         df = self.merge_data()
         in_position = False
@@ -42,6 +53,10 @@ class Backtester:
         sl_price = None
 
         for row in df.itertuples():
+            # Check if backtest was already stopped
+            if self.backtest_stopped:
+                break
+
             current_time = row.Index
             signal = getattr(row, 'signal', 0)
             open_price = row.open
@@ -81,6 +96,20 @@ class Backtester:
                     self.balance += self.position_size * net_pnl_percent
                     pnl_sum += net_pnl_percent * 100
 
+                    # Check balance protection after position close
+                    if self.check_balance_protection(current_time, action, entry_price, exit_price):
+                        # Add final record before stopping
+                        results.append({
+                            'datetime': current_time,
+                            'action': action,
+                            'buy_price': entry_price,
+                            'sell_price': exit_price,
+                            'pnl_percent': net_pnl_percent * 100,
+                            'pnl_sum': pnl_sum,
+                            'balance': self.balance
+                        })
+                        break
+
                     results.append({
                         'datetime': current_time,
                         'action': action,
@@ -94,8 +123,14 @@ class Backtester:
                 else:
                     continue
 
-            # Enter new trade
+            # Enter new trade - check balance protection before entering
             if not in_position and signal in [1, -1]:
+                # Check if we have enough balance to continue trading
+                if self.balance <= self.min_balance:
+                    print(f"⚠️  BACKTEST STOPPED: Insufficient balance ({self.balance:.2f}) to enter new trade")
+                    self.backtest_stopped = True
+                    break
+
                 in_position = True
                 position_type = 'long' if signal == 1 else 'short'
                 entry_price = open_price
@@ -107,6 +142,21 @@ class Backtester:
                 pnl_sum += pnl_percent * 100
                 tp_price = entry_price * (1 + self.tp) if position_type == 'long' else entry_price * (1 - self.tp)
                 sl_price = entry_price * (1 - self.sl) if position_type == 'long' else entry_price * (1 + self.sl)
+                
+                # Check balance protection after entry fee deduction
+                if self.check_balance_protection(current_time, "entry_fee", entry_price, 0):
+                    # Add final record before stopping
+                    results.append({
+                        'datetime': current_time,
+                        'action': 'buy' if signal == 1 else 'sell',
+                        'buy_price': open_price,
+                        'sell_price': 0.0,
+                        'pnl_percent': pnl_percent * 100,
+                        'pnl_sum': pnl_sum,
+                        'balance': self.balance
+                    })
+                    break
+
                 results.append({
                     'datetime': current_time,
                     'action': 'buy' if signal == 1 else 'sell',
@@ -153,6 +203,20 @@ class Backtester:
                     self.balance += self.position_size * net_pnl_percent
                     pnl_sum += net_pnl_percent * 100
 
+                    # Check balance protection after position close
+                    if self.check_balance_protection(current_time, action, entry_price, exit_price):
+                        # Add final record before stopping
+                        results.append({
+                            'datetime': current_time,
+                            'action': action,
+                            'buy_price': entry_price,
+                            'sell_price': exit_price,
+                            'pnl_percent': net_pnl_percent * 100,
+                            'pnl_sum': pnl_sum,
+                            'balance': self.balance
+                        })
+                        break
+
                     results.append({
                         'datetime': current_time,
                         'action': action,
@@ -162,5 +226,14 @@ class Backtester:
                         'pnl_sum': pnl_sum,
                         'balance': self.balance
                     })
+
+        # Add summary information if backtest was stopped
+        if self.backtest_stopped:
+            print(f"📊 BACKTEST SUMMARY:")
+            print(f"   Initial Balance: ${self.initial_balance:.2f}")
+            print(f"   Final Balance: ${self.balance:.2f}")
+            print(f"   Total Loss: ${self.initial_balance - self.balance:.2f}")
+            print(f"   Loss Percentage: {((self.initial_balance - self.balance) / self.initial_balance * 100):.2f}%")
+            print(f"   Total Trades: {len(results)}")
 
         return pd.DataFrame(results)

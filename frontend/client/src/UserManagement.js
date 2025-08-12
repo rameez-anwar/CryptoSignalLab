@@ -45,6 +45,7 @@ function UserManagement() {
   const [apiKey, setApiKey] = useState('');
   const [apiSecret, setApiSecret] = useState('');
   const [selectedStrategies, setSelectedStrategies] = useState([]);
+  const [useMl, setUseMl] = useState(false);
 
   const dropdownRef = useRef(null);
 
@@ -101,27 +102,27 @@ function UserManagement() {
     setApiKey('');
     setApiSecret('');
     setSelectedStrategies([]);
-    setStrategySearch('');
+    setUseMl(false);
   }, []);
 
   const handleAddUser = async (e) => {
     e.preventDefault();
     try {
-      const formData = {
+      setError(null);
+      const response = await axios.post('/api/users', {
         name,
         email,
         password,
         api_key: apiKey,
         api_secret: apiSecret,
-        strategies: selectedStrategies
-      };
+        strategies: selectedStrategies,
+        use_ml: useMl
+      });
       
-      const response = await axios.post('/api/users', formData);
       if (response.data.success) {
         setShowAddModal(false);
         resetFormFields();
         fetchUsers();
-        setError(null);
       }
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to add user');
@@ -131,22 +132,22 @@ function UserManagement() {
   const handleEditUser = async (e) => {
     e.preventDefault();
     try {
-      const formData = {
+      setError(null);
+      const response = await axios.put(`/api/users/${editingUser.id}`, {
         name,
         email,
         password,
         api_key: apiKey,
         api_secret: apiSecret,
-        strategies: selectedStrategies
-      };
+        strategies: selectedStrategies,
+        use_ml: useMl
+      });
       
-      const response = await axios.put(`/api/users/${editingUser.id}`, formData);
       if (response.data.success) {
         setShowEditModal(false);
         setEditingUser(null);
         resetFormFields();
         fetchUsers();
-        setError(null);
       }
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to update user');
@@ -180,6 +181,7 @@ function UserManagement() {
         setApiKey(userData.api_key || '');
         setApiSecret(userData.api_secret || '');
         setSelectedStrategies(parseStrategies(userData.strategies));
+        setUseMl(userData.use_ml || false);
         setShowEditModal(true);
       }
     } catch (err) {
@@ -351,6 +353,7 @@ function UserManagement() {
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Use ML</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Strategies</th>
                   <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
@@ -363,6 +366,19 @@ function UserManagement() {
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">{user.email}</div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="flex items-center">
+                        {user.use_ml ? (
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                            Enabled
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                            Disabled
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex flex-wrap gap-1">
@@ -509,6 +525,21 @@ function UserManagement() {
                 {showApiSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
+          </div>
+
+          <div>
+            <label className="flex items-center space-x-2 mb-2">
+              <input
+                type="checkbox"
+                checked={useMl}
+                onChange={(e) => setUseMl(e.target.checked)}
+                className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
+              />
+              <span className="text-sm font-medium text-gray-700">Use ML</span>
+            </label>
+            <p className="text-xs text-gray-500 mb-4">
+              Enable machine learning features for this user's strategies
+            </p>
           </div>
 
           <div>
@@ -718,6 +749,21 @@ function UserManagement() {
                 {showApiSecret ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
+          </div>
+
+          <div>
+            <label className="flex items-center space-x-2 mb-2">
+              <input
+                type="checkbox"
+                checked={useMl}
+                onChange={(e) => setUseMl(e.target.checked)}
+                className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
+              />
+              <span className="text-sm font-medium text-gray-700">Use ML</span>
+            </label>
+            <p className="text-xs text-gray-500 mb-4">
+              Enable machine learning features for this user's strategies
+            </p>
           </div>
 
           <div>

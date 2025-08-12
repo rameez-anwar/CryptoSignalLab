@@ -793,6 +793,7 @@ app.get('/api/users', async (req, res) => {
         name,
         email,
         strategies,
+        use_ml,
         created_at,
         updated_at
       FROM users.users 
@@ -819,7 +820,7 @@ app.get('/api/users', async (req, res) => {
 
 app.post('/api/users', async (req, res) => {
   try {
-    const { name, email, password, api_key, api_secret, strategies } = req.body;
+    const { name, email, password, api_key, api_secret, strategies, use_ml } = req.body;
     
     // Validate required fields
     if (!name || !email || !password || !api_key || !api_secret || !strategies) {
@@ -841,10 +842,13 @@ app.post('/api/users', async (req, res) => {
     // Hash password (in production, use bcrypt)
     const hashedPassword = password; // For now, store as plain text
     
+    // Set default value for use_ml if not provided
+    const useMlValue = use_ml !== undefined ? use_ml : false;
+    
     const query = `
-      INSERT INTO users.users (name, email, password, api_key, api_secret, strategies)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING id, name, email, strategies, created_at
+      INSERT INTO users.users (name, email, password, api_key, api_secret, strategies, use_ml)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING id, name, email, strategies, use_ml, created_at
     `;
     
     const result = await pool.query(query, [
@@ -853,7 +857,8 @@ app.post('/api/users', async (req, res) => {
       hashedPassword, 
       api_key, 
       api_secret, 
-      JSON.stringify(strategies)
+      JSON.stringify(strategies),
+      useMlValue
     ]);
     
     res.json({
@@ -874,7 +879,7 @@ app.post('/api/users', async (req, res) => {
 app.put('/api/users/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, email, password, api_key, api_secret, strategies } = req.body;
+    const { name, email, password, api_key, api_secret, strategies, use_ml } = req.body;
     
     // Validate required fields
     if (!name || !email || !api_key || !api_secret || !strategies) {
@@ -896,26 +901,29 @@ app.put('/api/users/:id', async (req, res) => {
       });
     }
     
+    // Set default value for use_ml if not provided
+    const useMlValue = use_ml !== undefined ? use_ml : false;
+    
     let query, params;
     
     if (password) {
       // Update with password
       query = `
         UPDATE users.users 
-        SET name = $1, email = $2, password = $3, api_key = $4, api_secret = $5, strategies = $6, updated_at = NOW()
-        WHERE id = $7
-        RETURNING id, name, email, strategies, updated_at
+        SET name = $1, email = $2, password = $3, api_key = $4, api_secret = $5, strategies = $6, use_ml = $7, updated_at = NOW()
+        WHERE id = $8
+        RETURNING id, name, email, strategies, use_ml, updated_at
       `;
-      params = [name, email, password, api_key, api_secret, JSON.stringify(strategies), id];
+      params = [name, email, password, api_key, api_secret, JSON.stringify(strategies), useMlValue, id];
     } else {
       // Update without password
       query = `
         UPDATE users.users 
-        SET name = $1, email = $2, api_key = $3, api_secret = $4, strategies = $5, updated_at = NOW()
-        WHERE id = $6
-        RETURNING id, name, email, strategies, updated_at
+        SET name = $1, email = $2, api_key = $3, api_secret = $4, strategies = $5, use_ml = $6, updated_at = NOW()
+        WHERE id = $7
+        RETURNING id, name, email, strategies, use_ml, updated_at
       `;
-      params = [name, email, api_key, api_secret, JSON.stringify(strategies), id];
+      params = [name, email, api_key, api_secret, JSON.stringify(strategies), useMlValue, id];
     }
     
     const result = await pool.query(query, params);
@@ -975,7 +983,7 @@ app.get('/api/users/:id', async (req, res) => {
     const { id } = req.params;
     
     const query = `
-      SELECT id, name, email, api_key, api_secret, strategies, created_at, updated_at
+      SELECT id, name, email, api_key, api_secret, strategies, use_ml, created_at, updated_at
       FROM users.users 
       WHERE id = $1
     `;
@@ -1205,6 +1213,7 @@ app.get('/api/models/:tableName/winloss', async (req, res) => {
     const tableName = req.params.tableName;
     const query = `
       SELECT 
+        action,
         pnl_percent
       FROM ml_ledger.${tableName}
       WHERE pnl_percent IS NOT NULL
@@ -1213,22 +1222,55 @@ app.get('/api/models/:tableName/winloss', async (req, res) => {
     
     const result = await pool.query(query);
     
-    const pnlValues = result.rows.map(row => parseFloat(row.pnl_percent || 0));
-    const totalTrades = pnlValues.length;
-    const wins = pnlValues.filter(pnl => pnl > 0).length;
-    const losses = pnlValues.filter(pnl => pnl < 0).length;
+    let winCount = 0;
+    let lossCount = 0;
+    const individualPnl = [];
+    
+    result.rows.forEach(row => {
+      const action = row.action;
+      const pnl = parseFloat(row.pnl_percent);
+      
+      // Skip transaction fee (-0.05)
+      if (pnl === -0.05) {
+        return;
+      }
+      
+      // Add to individual PNL array for bar chart
+      individualPnl.push(pnl);
+      
+      // Determine win/loss based on action and PnL
+      if (action === 'tp') {
+        // Take profit = win
+        winCount++;
+      } else if (action === 'sl') {
+        // Stop loss = loss
+        lossCount++;
+      } else if (action === 'direction_change') {
+        // Direction change: positive PnL = win, negative PnL = loss
+        if (pnl > 0) {
+          winCount++;
+        } else if (pnl < 0) {
+          lossCount++;
+        }
+      }
+      // Ignore 'buy' and 'sell' actions as they are just entry/exit markers
+    });
+    
+    const total = winCount + lossCount;
+    const winPercentage = total > 0 ? ((winCount / total) * 100).toFixed(1) : 0;
+    const lossPercentage = total > 0 ? ((lossCount / total) * 100).toFixed(1) : 0;
     
     const winLossData = {
-      total: totalTrades,
+      total: total,
       wins: {
-        count: wins,
-        percentage: totalTrades > 0 ? (wins / totalTrades) * 100 : 0
+        count: winCount,
+        percentage: parseFloat(winPercentage)
       },
       losses: {
-        count: losses,
-        percentage: totalTrades > 0 ? (losses / totalTrades) * 100 : 0
+        count: lossCount,
+        percentage: parseFloat(lossPercentage)
       },
-      individualPnl: pnlValues
+      individualPnl: individualPnl
     };
     
     res.json({
