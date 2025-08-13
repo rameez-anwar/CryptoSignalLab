@@ -13,6 +13,7 @@ import optuna
 import json
 from datetime import datetime
 from sqlalchemy import text
+import argparse
 
 # Add paths for existing modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'data', 'downloaders'))
@@ -26,6 +27,9 @@ from db_utils import get_pg_engine
 
 # Import our ML modules
 from learner.base_learner import BaseLearner
+
+# Import signal generator
+from signal_generator import SignalGenerator
 
 def load_config(config_path: str = "config.ini") -> Dict[str, Any]:
     """Load configuration from config.ini file"""
@@ -544,58 +548,85 @@ def optimize_model(base_learner: BaseLearner, data: pd.DataFrame, model_name: st
     return best_results
 
 def main():
-    """Main function to run the ML pipeline"""
-    print("=== ML Cryptocurrency Signal Generation Pipeline ===")
+    """Main function with support for both training and signal generation"""
+    # Hardcoded parameters for signal generation
+    signal_exchange = "bybit"
+    signal_symbol = "btc"
+    signal_time_horizon = "1h"
+    signal_continuous = False  # Set to True for continuous mode
+    
+    # Check if signal generation mode is requested (you can modify this logic)
+    # For now, we'll use a simple flag - you can change this to True to enable signal mode
+    use_signal_mode = False  # Change this to True to run signal generation
+    
+    if use_signal_mode:
+        # Signal generation mode
+        print("=== Signal Generation Mode ===")
+        print(f"Using hardcoded parameters:")
+        print(f"  Exchange: {signal_exchange}")
+        print(f"  Symbol: {signal_symbol}")
+        print(f"  Time Horizon: {signal_time_horizon}")
+        print(f"  Continuous Mode: {signal_continuous}")
+        
+        generator = SignalGenerator()
+        generator.run_signal_generation(
+            exchange=signal_exchange,
+            symbol=signal_symbol,
+            time_horizon=signal_time_horizon,
+            continuous=signal_continuous
+        )
+        return 0
+    
+    # Training mode (original functionality)
+    print("=== Training Mode ===")
     
     try:
         # Load configuration
-        print("Loading configuration...")
         config = load_config()
         
-        # Extract configuration values
+        # Create database summary
+        create_database_summary(config)
+        
+        # Initialize base learner
+        base_learner = BaseLearner()
+        
+        # Get configuration sections
         data_config = config['data']
         models_config = config['models']
         backtest_config = config['backtest']
         optimization_config = config['optimization']
         
-        print(f"Exchange: {data_config['exchange']}")
-        print(f"Symbol: {data_config['symbol']}")
-        print(f"Time Horizon: {data_config['time_horizon']}")
-        print(f"Date Range: {data_config['start_date']} to {data_config['end_date']}")
-        print(f"Selected Models: {models_config['selected_models']}")
+        print(f"Configuration loaded:")
+        print(f"  Exchange: {data_config['exchange']}")
+        print(f"  Symbol: {data_config['symbol']}")
+        print(f"  Time Horizon: {data_config['time_horizon']}")
+        print(f"  Models: {models_config['selected_models']}")
+        print(f"  Initial Capital: {backtest_config['initial_capital']}")
+        print(f"  Optimization Trials: {optimization_config['n_trials']}")
         
-        # Initialize components
-        print("\nInitializing components...")
-        data_downloader = DataDownloader(
-            exchange=data_config['exchange'],
-            symbol=data_config['symbol'],
-            time_horizon=data_config['time_horizon']
-        )
-        base_learner = BaseLearner()
-        
-        # Load data using existing DataDownloader
-        print("\nLoading data...")
+        # Load data
+        print("\n=== Loading Data ===")
         try:
-            # Convert dates to datetime
+            # Create DataDownloader instance
+            downloader = DataDownloader(
+                exchange=data_config['exchange'],
+                symbol=data_config['symbol'],
+                time_horizon=data_config['time_horizon']
+            )
+            
+            # Convert start_date to datetime for filtering
             start_time = pd.to_datetime(data_config['start_date'])
             
-            # Handle 'now' end date
-            if data_config['end_date'].lower() == 'now':
-                end_time = pd.Timestamp.now()
-            else:
-                end_time = pd.to_datetime(data_config['end_date'])
-            
-            # Fetch data using existing DataDownloader
-            data_tuple = data_downloader.fetch_data(start_time=start_time, end_time=end_time)
-            
-            if data_tuple is None or len(data_tuple) != 2:
-                raise ValueError("No data retrieved from DataDownloader")
-            
-            # DataDownloader returns (df_1min, df_horizon) - we want the time horizon data
-            df_1min, data = data_tuple
+            # Download data using fetch_data method
+            df_1min, data = downloader.fetch_data(
+                start_time=start_time,
+                end_time=pd.to_datetime(data_config['end_date']) if data_config['end_date'].lower() != 'now' else pd.Timestamp.now(),
+                auto_download=True
+            )
             
             if data is None or len(data) == 0:
-                raise ValueError("No time horizon data available")
+                print("No data downloaded. Please check your configuration and internet connection.")
+                return 1
             
             # Ensure data starts from the specified start date
             if hasattr(data.index, 'min') and callable(getattr(data.index, 'min', None)):
