@@ -181,9 +181,18 @@ class UnifiedSignalGenerator:
             logger.error(f"Error validating strategy combinations: {e}")
             return False
     
-    def get_bybit_client(self, user_config: Dict[str, Any]) -> HTTP:
+    def get_bybit_client(self, user_id_or_config) -> HTTP:
         """Get or create Bybit client for user"""
-        user_id = user_config['id']
+        # Handle both user_id (int) and user_config (dict)
+        if isinstance(user_id_or_config, dict):
+            user_config = user_id_or_config
+            user_id = user_config['id']
+        else:
+            user_id = user_id_or_config
+            user_config = self.get_user_config(user_id)
+            if not user_config:
+                logger.error(f"Could not get user config for user_id {user_id}")
+                return None
         
         if user_id not in self.trading_clients:
             try:
@@ -375,7 +384,8 @@ class UnifiedSignalGenerator:
             if time_horizon == '1h':
                 interval_minutes = 60
                 # Check if we're at minute 1 of each hour (01:01, 02:01, 03:01, etc.)
-                if now.minute == 1:  # Within minute 1 of each hour
+                # Allow a 2-minute window around minute 1 (00:01-02:01, 01:01-03:01, etc.)
+                if now.minute in [0, 1, 2]:  # Within 2 minutes of hour boundary
                     if minutes_since_last >= interval_minutes:  # Ensure at least 1 hour has passed
                         self.last_signal_times[strategy_key] = now
                         logger.info(f"1h signal generation triggered for {strategy_config['name']} at {now.strftime('%H:%M:%S')}")
@@ -383,12 +393,13 @@ class UnifiedSignalGenerator:
             elif time_horizon == '4h':
                 interval_minutes = 240
                 # Check if we're at minute 1 of 4-hour boundaries (01:01, 05:01, 09:01, etc.)
-                if now.hour % 4 == 1 and now.minute == 1:
+                # Allow a 2-minute window around minute 1
+                if now.hour % 4 == 1 and now.minute in [0, 1, 2]:
                     if minutes_since_last >= interval_minutes:  # Ensure at least 4 hours have passed
                         self.last_signal_times[strategy_key] = now
                         logger.info(f"4h signal generation triggered for {strategy_config['name']} at {now.strftime('%H:%M:%S')}")
                         return True
-                elif now.hour % 4 == 0 and now.minute == 1:
+                elif now.hour % 4 == 0 and now.minute in [0, 1, 2]:
                     # Handle 00:01, 04:01, 08:01, etc.
                     if minutes_since_last >= interval_minutes:  # Ensure at least 4 hours have passed
                         self.last_signal_times[strategy_key] = now
@@ -397,7 +408,8 @@ class UnifiedSignalGenerator:
             elif time_horizon == '1d':
                 interval_minutes = 1440
                 # Check if we're at minute 1 of daily boundaries (00:01)
-                if now.hour == 0 and now.minute == 1:
+                # Allow a 2-minute window around minute 1
+                if now.hour == 0 and now.minute in [0, 1, 2]:
                     if minutes_since_last >= interval_minutes:  # Ensure at least 1 day has passed
                         self.last_signal_times[strategy_key] = now
                         logger.info(f"1d signal generation triggered for {strategy_config['name']} at {now.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -405,7 +417,8 @@ class UnifiedSignalGenerator:
             else:
                 # Default to 1 hour
                 interval_minutes = 60
-                if now.minute == 1:
+                # Allow a 2-minute window around minute 1
+                if now.minute in [0, 1, 2]:
                     if minutes_since_last >= interval_minutes:
                         self.last_signal_times[strategy_key] = now
                         logger.info(f"Default 1h signal generation triggered for {strategy_config['name']} at {now.strftime('%H:%M:%S')}")
@@ -912,29 +925,14 @@ class UnifiedSignalGenerator:
                     native_trade_amount = round(native_trade_amount, 2)
                     logger.info(f"Applied -0.05% PnL for {action} action, fee: {fee_amount:.2f}, new trade amount: {native_trade_amount}")
                 else:
-                    # For closing trades, calculate actual PnL based on buy/sell prices and direction
-                    if native_exit_price > 0 and native_entry_price > 0:
-                        # Determine direction from signal
-                        if signal == 1:
-                            direction = 'long'
-                        elif signal == -1:
-                            direction = 'short'
-                        else:
-                            # Try to determine from previous ledger entry
-                            direction = 'long'  # Default fallback
-                        
-                        # Calculate actual PnL
-                        actual_pnl = self.calculate_actual_pnl(native_entry_price, native_exit_price, direction)
-                        native_pnl = actual_pnl
-                        
-                        # Apply fee to trade amount
-                        fee_amount = (native_trade_amount * 0.0005)  # 0.05% of trade amount
-                        native_trade_amount -= fee_amount
-                        native_trade_amount = round(native_trade_amount, 2)
-                        
-                        logger.info(f"Calculated actual PnL for {action}: {actual_pnl:.2f}% (direction: {direction})")
-                    else:
-                        native_pnl = -0.05  # Fallback to fee only
+                    # For closing trades, use the PnL that was already calculated and passed in
+                    # The PnL calculation is done in the calling method, so we use the passed value
+                    logger.info(f"Using pre-calculated PnL for {action}: {native_pnl:.4f}%")
+                    
+                    # Apply fee to trade amount
+                    fee_amount = (native_trade_amount * 0.0005)  # 0.05% of trade amount
+                    native_trade_amount -= fee_amount
+                    native_trade_amount = round(native_trade_amount, 2)
             else:
                 # For other actions, apply the actual PnL to trade amount
                 if native_pnl != 0:
@@ -954,9 +952,9 @@ class UnifiedSignalGenerator:
             # Convert action to match CSV format
             if action == 'open':
                 action_str = 'buy'
-            elif action == 'tp':
+            elif action == 'tp' or action == 'tp_hit':
                 action_str = 'sell - take_profit'
-            elif action == 'sl':
+            elif action == 'sl' or action == 'sl_hit':
                 action_str = 'sell - stop_loss'
             elif action == 'direction_change':
                 action_str = 'sell - direction change'
@@ -972,12 +970,36 @@ class UnifiedSignalGenerator:
             # Format datetime as YYYY-MM-DD HH:MM:SS
             current_datetime = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
+            # Check if this exact entry already exists to prevent duplicates
+            check_query = text(f"""
+                SELECT COUNT(*) FROM execution.{table_name} 
+                WHERE order_id = :order_id 
+                AND action = :action 
+                AND buy_price = :buy_price 
+                AND sell_price = :sell_price
+            """)
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(check_query, {
+                    'order_id': order_id,
+                    'action': action_str,
+                    'buy_price': native_entry_price,
+                    'sell_price': native_exit_price
+                })
+                count = result.fetchone()[0]
+                if count > 0:
+                    logger.info(f"Entry already exists for order_id={order_id}, action={action_str} - skipping duplicate")
+                    return
+            
             # Insert ledger entry
             query = text(f"""
                 INSERT INTO execution.{table_name} 
                 (datetime, predicted_direction, action, buy_price, sell_price, balance, pnl_percent, pnl_sum, trade_amount, order_id)
                 VALUES (:datetime, :predicted_direction, :action, :buy_price, :sell_price, :balance, :pnl_percent, :pnl_sum, :trade_amount, :order_id)
             """)
+            
+            # Log the final values being inserted
+            logger.info(f"Inserting ledger entry: pnl_percent={native_pnl:.4f}%, pnl_sum={native_pnl_sum:.4f}%")
             
             with self.engine.connect() as conn:
                 conn.execute(query, {
@@ -1035,33 +1057,242 @@ class UnifiedSignalGenerator:
             logger.error(f"Error getting open orders: {e}")
             return []
     
+    def check_tp_sl_hit(self, client: HTTP, symbol: str, position_side: str, position_key: str) -> tuple[bool, str]:
+        """Check if TP/SL was hit for a position using order history to find closing order"""
+        try:
+            if position_key not in self.active_positions:
+                return False, ""
+            
+            position_data = self.active_positions[position_key]
+            order_id = position_data.get('order_id', "")
+            tp_price = position_data.get('tp_price', 0)
+            sl_price = position_data.get('sl_price', 0)
+            
+            if not order_id or tp_price == 0 or sl_price == 0:
+                return False, ""
+            
+            # Get order history to find the closing order
+            order_resp = client.get_order_history(
+                category="linear",
+                symbol=symbol,
+                limit=50  # Get more orders to find the closing one
+            )
+            
+            if order_resp.get("retCode") == 0 and order_resp["result"]["list"]:
+                orders = order_resp["result"]["list"]
+                logger.debug(f"Found {len(orders)} orders in history for {symbol}")
+                
+                # Look for the closing order (opposite side) that was executed after the opening order
+                closing_order = None
+                opening_order_time = None
+                
+                # First find the opening order time
+                for order in orders:
+                    if order.get('orderId') == order_id:
+                        opening_order_time = int(order.get('createdTime', 0))
+                        logger.debug(f"Opening order time: {opening_order_time}")
+                        break
+                
+                if opening_order_time:
+                    # Look for closing orders (opposite side) that were created after the opening order
+                    # We need to find the specific closing order that corresponds to this opening order
+                    # The closing order should be the one that was created immediately after the opening order
+                    closing_orders = []
+                    for order in orders:
+                        order_side = order.get('side', '')
+                        order_time = int(order.get('createdTime', 0))
+                        order_status = order.get('orderStatus', '')
+                        
+                        # For long position (Buy), look for Sell orders
+                        # For short position (Sell), look for Buy orders
+                        expected_closing_side = "Sell" if position_side == "Buy" else "Buy"
+                        
+                        if (order_side == expected_closing_side and 
+                            order_time > opening_order_time and 
+                            order_status == 'Filled'):
+                            closing_orders.append(order)
+                    
+                    # Sort by creation time and take the one closest to the opening order
+                    if closing_orders:
+                        closing_orders.sort(key=lambda x: int(x.get('createdTime', 0)))
+                        closing_order = closing_orders[0]  # Take the earliest closing order
+                        logger.debug(f"Found closing order: {closing_order.get('orderId')} (closest to opening)")
+                        
+                        # Additional check: Verify this is the correct closing order by checking the time difference
+                        # The closing order should be created very close to the opening order (within a few seconds)
+                        time_diff = int(closing_order.get('createdTime', 0)) - opening_order_time
+                        if time_diff > 60000:  # More than 1 minute difference
+                            logger.warning(f"Closing order {closing_order.get('orderId')} was created {time_diff}ms after opening order - this might not be the correct closing order")
+                            # Look for a closer closing order
+                            for order in closing_orders:
+                                order_time = int(order.get('createdTime', 0))
+                                time_diff = order_time - opening_order_time
+                                if time_diff <= 60000:  # Within 1 minute
+                                    closing_order = order
+                                    logger.debug(f"Found closer closing order: {closing_order.get('orderId')} (time diff: {time_diff}ms)")
+                                    break
+                
+                if closing_order:
+                    # Get the execution details for the closing order
+                    exit_price = float(closing_order.get('avgPrice', 0))
+                    
+                    logger.debug(f"Closing order - Exit price: {exit_price}")
+                    logger.debug(f"Comparing exit_price ({exit_price}) with SL ({sl_price}) and TP ({tp_price})")
+                    
+                    # Determine if this was TP/SL hit based on exit price vs TP/SL levels
+                    logger.info(f"DEBUG: exit_price={exit_price}, sl_price={sl_price}, tp_price={tp_price}")
+                    logger.info(f"DEBUG: exit_price <= sl_price: {exit_price <= sl_price}")
+                    logger.info(f"DEBUG: exit_price >= tp_price: {exit_price >= tp_price}")
+                    
+                    if position_side == "Buy":  # Long position
+                        if exit_price >= tp_price:
+                            logger.info(f"✅ TP HIT: {exit_price} >= {tp_price}")
+                            return True, "tp_hit"
+                        elif exit_price <= sl_price:
+                            logger.info(f"✅ SL HIT: {exit_price} <= {sl_price}")
+                            return True, "sl_hit"
+                        else:
+                            logger.info(f"❌ Manual Close: {exit_price} is between SL ({sl_price}) and TP ({tp_price})")
+                            return True, "manually_closed"
+                    else:  # Short position
+                        if exit_price <= tp_price:
+                            logger.info(f"✅ TP HIT: {exit_price} <= {tp_price}")
+                            return True, "tp_hit"
+                        elif exit_price >= sl_price:
+                            logger.info(f"✅ SL HIT: {exit_price} >= {sl_price}")
+                            return True, "sl_hit"
+                        else:
+                            logger.info(f"❌ Manual Close: {exit_price} is between TP ({tp_price}) and SL ({sl_price})")
+                            return True, "manually_closed"
+                else:
+                    logger.debug("No closing order found in order history")
+            
+            # Fallback: try to get execution list for the original order
+            try:
+                resp = client.get_executions(
+                    category="linear",
+                    symbol=symbol,
+                    orderId=order_id
+                )
+                
+                if resp.get("retCode") == 0 and resp.get("result", {}).get("list"):
+                    executions = resp["result"]["list"]
+                    logger.debug(f"Found {len(executions)} executions")
+                    
+                    # This shows the opening execution, not the closing one
+                    if executions:
+                        entry_execution = executions[0]
+                        entry_price = float(entry_execution.get('execPrice', 0))
+                        logger.debug(f"Opening execution price: {entry_price}")
+                        return False, "Only opening execution found"
+                        
+            except Exception as e:
+                logger.error(f"API error fetching executions: {e}")
+            
+            # Fallback to order history if execution list fails
+            try:
+                order_resp = client.get_order_history(
+                    category="linear",
+                    symbol=symbol,
+                    orderId=order_id
+                )
+
+                if order_resp.get("retCode") == 0 and order_resp["result"]["list"]:
+                    order_info = order_resp["result"]["list"][0]
+                    logger.debug(f"Order info: {order_info}")
+
+                    # Check if this is a closing order (opposite side)
+                    order_side = order_info.get("side", "")
+                    logger.debug(f"Order side: {order_side}")
+
+                    # Use avgPrice as exit price (this is the execution price)
+                    try:
+                        exec_price = float(order_info.get("avgPrice") or 0.0)
+                    except (ValueError, TypeError):
+                        exec_price = 0.0
+
+                    logger.info(f"Order history - Exit price: {exec_price}")
+                    logger.info(f"Comparing exit_price ({exec_price}) with SL ({sl_price}) and TP ({tp_price})")
+
+                    # Determine reason based on exit price vs TP/SL levels
+                    if position_side == "Buy":  # Long position
+                        if exec_price <= sl_price:
+                            logger.info(f"✅ SL HIT: {exec_price} <= {sl_price}")
+                            return True, "sl_hit"
+                        elif exec_price >= tp_price:
+                            logger.info(f"✅ TP HIT: {exec_price} >= {tp_price}")
+                            return True, "tp_hit"
+                        else:
+                            logger.info(f"❌ Manual Close: {exec_price} is between SL ({sl_price}) and TP ({tp_price})")
+                            return True, "manually_closed"
+                    else:  # Short position
+                        if exec_price >= sl_price:
+                            logger.info(f"✅ SL HIT: {exec_price} >= {sl_price}")
+                            return True, "sl_hit"
+                        elif exec_price <= tp_price:
+                            logger.info(f"✅ TP HIT: {exec_price} <= {tp_price}")
+                            return True, "tp_hit"
+                        else:
+                            logger.info(f"❌ Manual Close: {exec_price} is between TP ({tp_price}) and SL ({sl_price})")
+                            return True, "manually_closed"
+
+            except Exception as e:
+                logger.error(f"Fallback order history error: {e}")
+
+            return False, "No execution data"
+            
+        except Exception as e:
+            logger.error(f"Error checking TP/SL hit: {e}")
+            return False, ""
+    
     def check_manual_closure(self, client: HTTP, symbol: str, last_order_id: str) -> bool:
-        """Check if the last order was manually closed"""
+        """Check if the last order was manually closed (NOT TP/SL)"""
         try:
             # First check if position still exists
             current_position = self.get_position(client, symbol)
             if current_position is None or float(current_position.get('size', 0)) == 0:
-                logger.info(f"Position for {symbol} is closed (no position found)")
+                # Position is closed - check if it was TP/SL or manual
+                logger.info(f"Position for {symbol} is closed - checking reason")
+                
+                # Check closed PnL first to see if it was TP/SL
+                closed_pnl_data = self.get_closed_pnl(client, symbol, limit=10)
+                for pnl_record in closed_pnl_data:
+                    if float(pnl_record.get('size', 0)) > 0:
+                        # This was a TP/SL hit, not manual closure
+                        logger.info(f"Position closed by TP/SL for {symbol} - not manual closure")
+                        return False
+                
+                # Check order history to see if order was manually cancelled
+                orders = self.get_order_history(client, symbol, limit=50)
+                
+                for order in orders:
+                    if order['orderId'] == last_order_id:
+                        # Check if order was cancelled (manual closure)
+                        if order['orderStatus'] == 'Cancelled':
+                            logger.info(f"Order {last_order_id} was manually cancelled")
+                            return True
+                        # Check if order was partially filled and then cancelled
+                        elif (order['orderStatus'] == 'PartiallyFilled' and 
+                              float(order.get('cumExecQty', 0)) > 0):
+                            logger.info(f"Order {last_order_id} was partially filled and cancelled")
+                            return True
+                        # Check if order was fully filled but position is closed
+                        elif order['orderStatus'] == 'Filled':
+                            # Check if there's a corresponding close order
+                            close_orders = [o for o in orders if o.get('side') != order.get('side') and o['orderStatus'] == 'Filled']
+                            if close_orders:
+                                # There's a close order - this might be manual closure
+                                logger.info(f"Order {last_order_id} was filled and closed by another order (manual closure)")
+                                return True
+                            else:
+                                # No close order found - might be TP/SL
+                                logger.info(f"Order {last_order_id} was filled but no close order found - likely TP/SL")
+                                return False
+                
+                # If we get here, position is closed but we can't determine reason
+                # Default to manual closure for safety
+                logger.info(f"Position closed for {symbol} but reason unclear - assuming manual closure")
                 return True
-            
-            # Get order history to check if order was cancelled
-            orders = self.get_order_history(client, symbol, limit=50)
-            
-            for order in orders:
-                if order['orderId'] == last_order_id:
-                    # Check if order was cancelled (manual closure)
-                    if order['orderStatus'] == 'Cancelled':
-                        logger.info(f"Order {last_order_id} was manually cancelled")
-                        return True
-                    # Check if order was partially filled and then cancelled
-                    elif (order['orderStatus'] == 'PartiallyFilled' and 
-                          float(order.get('cumExecQty', 0)) > 0):
-                        logger.info(f"Order {last_order_id} was partially filled and cancelled")
-                        return True
-                    # Check if order was fully filled but position is closed
-                    elif order['orderStatus'] == 'Filled' and current_position is None:
-                        logger.info(f"Order {last_order_id} was filled but position is closed (manual closure)")
-                        return True
             
             return False
             
@@ -1183,15 +1414,19 @@ class UnifiedSignalGenerator:
             closure_reason = ""
             exit_price = 0.0
             
-            # Check for TP/SL hit first
-            closed_pnl_data = self.get_closed_pnl(client, symbol, limit=10)
-            for pnl_record in closed_pnl_data:
-                if pnl_record.get('side') == position_data.get('side', '') and float(pnl_record.get('size', 0)) > 0:
-                    # Position was closed by TP/SL
-                    closure_reason = "tp" if float(pnl_record.get('closedPnl', 0)) > 0 else "sl"
-                    exit_price = float(pnl_record.get('execPrice', 0))
-                    logger.info(f"TP/SL hit detected for {symbol}: {closure_reason}")
-                    break
+            # Check for TP/SL hit first using the new detection method
+            should_close, close_reason = self.check_tp_sl_hit(client, symbol, position_data.get('side', ''), position_key)
+            if should_close:
+                closure_reason = close_reason
+                # Get exit price from closed PnL data
+                closed_pnl_data = self.get_closed_pnl(client, symbol, limit=10)
+                for pnl_record in closed_pnl_data:
+                    if pnl_record.get('side') == position_data.get('side', '') and float(pnl_record.get('size', 0)) > 0:
+                        exit_price = float(pnl_record.get('execPrice', 0))
+                        break
+                if exit_price == 0:
+                    exit_price = self.get_current_price(client, symbol) or entry_price
+                logger.info(f"TP/SL hit detected for {symbol}: {closure_reason}")
             
             # If not TP/SL, check for direction change
             if not closure_reason:
@@ -1211,6 +1446,12 @@ class UnifiedSignalGenerator:
             else:  # Short position
                 pnl_percent = ((entry_price - exit_price) / entry_price) * 100 if entry_price > 0 else 0
             
+            logger.info(f"Raw PnL calculation: entry_price={entry_price}, exit_price={exit_price}, side={position_data.get('side')}, raw_pnl={pnl_percent:.4f}%")
+            
+            # Add -0.05% fee for closing trades (TP/SL, direction change, manual close)
+            pnl_percent -= 0.05
+            logger.info(f"Final PnL after fee: {pnl_percent:.4f}%")
+            
             # Get real balance after closure
             new_balance = self.get_account_balance(client)
             
@@ -1219,14 +1460,32 @@ class UnifiedSignalGenerator:
             if ledger_key not in self.ledger_data:
                 self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
             
-            # Update pnl_sum with actual PnL (including the -0.05% fee)
-            self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
+            # Get the last pnl_sum from ledger to ensure we're adding to the correct value
+            table_name = self.get_ledger_table_name(user_id, strategy_config)
+            last_pnl_query = text(f"""
+                SELECT pnl_sum FROM execution.{table_name} 
+                ORDER BY datetime DESC LIMIT 1
+            """)
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(last_pnl_query)
+                row = result.fetchone()
+                if row:
+                    last_pnl_sum = float(row[0])
+                else:
+                    last_pnl_sum = 0.0
+            
+            # Update pnl_sum by adding to the last value
+            new_pnl_sum = last_pnl_sum + pnl_percent
+            self.ledger_data[ledger_key]['pnl_sum'] = new_pnl_sum
+            
+            logger.info(f"Cumulative PnL calculation: last_pnl_sum={last_pnl_sum:.4f}%, current_pnl={pnl_percent:.4f}%, new_pnl_sum={new_pnl_sum:.4f}%")
             
             # Update ledger with closure
             self.update_ledger(
                 user_id, strategy_config, closure_reason,
                 new_signal, entry_price, exit_price,
-                self.get_account_balance(client), pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
+                new_balance, pnl_percent, new_pnl_sum,
                 trade_amount, order_id
             )
             
@@ -1246,12 +1505,14 @@ class UnifiedSignalGenerator:
             # Get the ledger table name
             table_name = self.get_ledger_table_name(user_id, strategy_config)
             
-            # Query the ledger for the most recent 'buy' action (open trade)
+            # Query the ledger for the most recent 'buy' action (open trade) that hasn't been closed yet
             query = text(f"""
-                SELECT order_id, buy_price, trade_amount, datetime 
-                FROM execution.{table_name} 
-                WHERE action = 'buy' 
-                ORDER BY datetime DESC 
+                SELECT l1.order_id, l1.buy_price, l1.trade_amount, l1.datetime 
+                FROM execution.{table_name} l1
+                LEFT JOIN execution.{table_name} l2 ON l1.order_id = l2.order_id 
+                    AND l2.action IN ('sell - take_profit', 'sell - stop_loss', 'sell - direction change', 'manually_closed')
+                WHERE l1.action = 'buy' AND l2.order_id IS NULL
+                ORDER BY l1.datetime DESC 
                 LIMIT 1
             """)
             
@@ -1267,64 +1528,175 @@ class UnifiedSignalGenerator:
                     
                     logger.info(f"Found old trade in ledger: order_id={order_id}, buy_price={buy_price}")
                     
+                    # Check if this trade has already been processed (has a closing entry)
+                    check_closed_query = text(f"""
+                        SELECT COUNT(*) FROM execution.{table_name} 
+                        WHERE order_id = :order_id 
+                        AND action IN ('sell - take_profit', 'sell - stop_loss', 'sell - direction change', 'manually_closed')
+                    """)
+                    
+                    with self.engine.connect() as conn:
+                        result = conn.execute(check_closed_query, {'order_id': order_id})
+                        count = result.fetchone()[0]
+                        if count > 0:
+                            logger.info(f"Trade {order_id} has already been processed (found {count} closing entries)")
+                            return False
+                    
                     # Check if this order was executed and closed
                     symbol = f"{strategy_config['symbol'].upper()}USDT"
                     
-                    # Check for TP/SL hits first
-                    closed_pnl_data = self.get_closed_pnl(client, symbol, limit=20)
-                    for pnl_record in closed_pnl_data:
-                        if pnl_record.get('orderId') == order_id:
-                            # Order was closed by TP/SL
-                            exit_price = float(pnl_record.get('execPrice', 0))
-                            closed_pnl = float(pnl_record.get('closedPnl', 0))
-                            closure_reason = "tp" if closed_pnl > 0 else "sl"
+                    # Check for TP/SL hits using improved order history logic
+                    order_resp = client.get_order_history(
+                        category="linear",
+                        symbol=symbol,
+                        limit=50  # Get more orders to find the closing one
+                    )
+                    
+                    if order_resp.get("retCode") == 0 and order_resp["result"]["list"]:
+                        orders = order_resp["result"]["list"]
+                        logger.debug(f"Found {len(orders)} orders in history for {symbol}")
+                        
+                        # Look for the closing order (opposite side) that was executed after the opening order
+                        closing_order = None
+                        opening_order_time = None
+                        
+                        # First find the opening order time
+                        for order in orders:
+                            if order.get('orderId') == order_id:
+                                opening_order_time = int(order.get('createdTime', 0))
+                                logger.debug(f"Opening order time: {opening_order_time}")
+                                break
+                        
+                        if opening_order_time:
+                            # Look for closing orders (opposite side) that were created after the opening order
+                            # We need to find the specific closing order that corresponds to this opening order
+                            closing_orders = []
+                            for order in orders:
+                                order_side = order.get('side', '')
+                                order_time = int(order.get('createdTime', 0))
+                                order_status = order.get('orderStatus', '')
+                                
+                                # For long position (Buy), look for Sell orders
+                                # For short position (Sell), look for Buy orders
+                                # Since we don't know the original side, check both
+                                if (order_side in ['Buy', 'Sell'] and 
+                                    order_time > opening_order_time and 
+                                    order_status == 'Filled'):
+                                    closing_orders.append(order)
+                            
+                            # Sort by creation time and take the one closest to the opening order
+                            if closing_orders:
+                                closing_orders.sort(key=lambda x: int(x.get('createdTime', 0)))
+                                closing_order = closing_orders[0]  # Take the earliest closing order
+                                logger.debug(f"Found closing order: {closing_order.get('orderId')} (closest to opening)")
+                                
+                                # Additional check: Verify this is the correct closing order by checking the time difference
+                                time_diff = int(closing_order.get('createdTime', 0)) - opening_order_time
+                                if time_diff > 60000:  # More than 1 minute difference
+                                    logger.warning(f"Closing order {closing_order.get('orderId')} was created {time_diff}ms after opening order - this might not be the correct closing order")
+                                    # Look for a closer closing order
+                                    for order in closing_orders:
+                                        order_time = int(order.get('createdTime', 0))
+                                        time_diff = order_time - opening_order_time
+                                        if time_diff <= 60000:  # Within 1 minute
+                                            closing_order = order
+                                            logger.debug(f"Found closer closing order: {closing_order.get('orderId')} (time diff: {time_diff}ms)")
+                                            break
+                        
+                        if closing_order:
+                            # Get the execution details for the closing order
+                            exit_price = float(closing_order.get('avgPrice', 0))
+                            closing_side = closing_order.get('side', '')
+                            
+                            logger.debug(f"Closing order - Exit price: {exit_price}, Side: {closing_side}")
+                            
+                            # Determine the original position side based on closing side
+                            # If closing side is Buy, original was Sell (Short)
+                            # If closing side is Sell, original was Buy (Long)
+                            original_side = "Sell" if closing_side == "Buy" else "Buy"
+                            
+                            # Additional verification: Check if this makes sense with the opening order
+                            if original_side == "Buy":  # Long position
+                                logger.debug(f"Confirmed: Original position was LONG (Buy), closed by {closing_side}")
+                            else:  # Short position
+                                logger.debug(f"Confirmed: Original position was SHORT (Sell), closed by {closing_side}")
+                            
+                            # Get TP/SL prices from strategy config
+                            tp_percent = strategy_config.get('take_profit', 0.05)
+                            sl_percent = strategy_config.get('stop_loss', 0.03)
+                            
+                            if original_side == "Buy":  # Long position
+                                tp_price = buy_price * (1 + tp_percent)
+                                sl_price = buy_price * (1 - sl_percent)
+                            else:  # Short position
+                                tp_price = buy_price * (1 - tp_percent)
+                                sl_price = buy_price * (1 + sl_percent)
+                            
+                            logger.debug(f"TP: {tp_price}, SL: {sl_price}")
+                            
+                            # Determine if this was TP/SL hit based on exit price vs TP/SL levels
+                            if original_side == "Buy":  # Long position
+                                if exit_price >= tp_price:
+                                    closure_reason = "tp_hit"
+                                    logger.info(f"✅ TP HIT: {exit_price} >= {tp_price}")
+                                elif exit_price <= sl_price:
+                                    closure_reason = "sl_hit"
+                                    logger.info(f"✅ SL HIT: {exit_price} <= {sl_price}")
+                                else:
+                                    closure_reason = "manually_closed"
+                                    logger.info(f"❌ Manual Close: {exit_price} is between SL ({sl_price}) and TP ({tp_price})")
+                            else:  # Short position
+                                if exit_price <= tp_price:
+                                    closure_reason = "tp_hit"
+                                    logger.info(f"✅ TP HIT: {exit_price} <= {tp_price}")
+                                elif exit_price >= sl_price:
+                                    closure_reason = "sl_hit"
+                                    logger.info(f"✅ SL HIT: {exit_price} >= {sl_price}")
+                                else:
+                                    closure_reason = "manually_closed"
+                                    logger.info(f"❌ Manual Close: {exit_price} is between TP ({tp_price}) and SL ({sl_price})")
                             
                             # Calculate PnL
-                            # Query the ledger to get the original predicted_direction
-                            direction_query = text(f"""
-                                SELECT predicted_direction 
-                                FROM execution.{table_name} 
-                                WHERE order_id = :order_id AND action = 'buy'
-                            """)
+                            if original_side == "Buy":  # Long position
+                                pnl_percent = ((exit_price - buy_price) / buy_price) * 100
+                            else:  # Short position
+                                pnl_percent = ((buy_price - exit_price) / buy_price) * 100
                             
-                            with self.engine.connect() as conn:
-                                direction_result = conn.execute(direction_query, {'order_id': order_id})
-                                direction_row = direction_result.fetchone()
-                                predicted_direction = direction_row[0] if direction_row else 'long'
-                                
-                                # If predicted_direction is 'neutral', try to determine from order side using Bybit API
-                                if predicted_direction == 'neutral':
-                                    # Get order details from Bybit API
-                                    orders = self.get_order_history(client, symbol, limit=50)
-                                    for order in orders:
-                                        if order['orderId'] == order_id:
-                                            if order.get('side') == 'Sell':
-                                                direction = 'short'
-                                            else:
-                                                direction = 'long'  # Default to long
-                                            break
-                                    else:
-                                        direction = 'long'  # Default fallback
-                                else:
-                                    direction = 'long' if predicted_direction == 'long' else 'short'
-                            
-                            pnl_percent = self.calculate_actual_pnl(buy_price, exit_price, direction)
+                            # Add -0.05% fee for closing trades
+                            pnl_percent -= 0.05
                             
                             # Get real balance
                             new_balance = self.get_account_balance(client)
+                            
+                            # Get the last pnl_sum from ledger to ensure we're adding to the correct value
+                            last_pnl_query = text(f"""
+                                SELECT pnl_sum FROM execution.{table_name} 
+                                ORDER BY datetime DESC LIMIT 1
+                            """)
+                            
+                            with self.engine.connect() as conn:
+                                result = conn.execute(last_pnl_query)
+                                row = result.fetchone()
+                                if row:
+                                    last_pnl_sum = float(row[0])
+                                else:
+                                    last_pnl_sum = 0.0
+                            
+                            # Update pnl_sum by adding to the last value
+                            new_pnl_sum = last_pnl_sum + pnl_percent
                             
                             # Update ledger data
                             ledger_key = f"{user_id}_{strategy_config['name']}"
                             if ledger_key not in self.ledger_data:
                                 self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
                             
-                            self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
+                            self.ledger_data[ledger_key]['pnl_sum'] = new_pnl_sum
                             
                             # Update ledger with closure
                             self.update_ledger(
                                 user_id, strategy_config, closure_reason,
                                 0, buy_price, exit_price,  # signal 0 for closure
-                                new_balance, pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
+                                new_balance, pnl_percent, new_pnl_sum,
                                 trade_amount, order_id
                             )
                             
@@ -1371,21 +1743,41 @@ class UnifiedSignalGenerator:
                                 # Calculate PnL at current price
                                 pnl_percent = self.calculate_actual_pnl(buy_price, current_price, direction)
                                 
+                                # Add -0.05% fee for closing trades
+                                pnl_percent -= 0.05
+                                
                                 # Get real balance
                                 new_balance = self.get_account_balance(client)
+                                
+                                # Get the last pnl_sum from ledger to ensure we're adding to the correct value
+                                last_pnl_query = text(f"""
+                                    SELECT pnl_sum FROM execution.{table_name} 
+                                    ORDER BY datetime DESC LIMIT 1
+                                """)
+                                
+                                with self.engine.connect() as conn:
+                                    result = conn.execute(last_pnl_query)
+                                    row = result.fetchone()
+                                    if row:
+                                        last_pnl_sum = float(row[0])
+                                    else:
+                                        last_pnl_sum = 0.0
+                                
+                                # Update pnl_sum by adding to the last value
+                                new_pnl_sum = last_pnl_sum + pnl_percent
                                 
                                 # Update ledger data
                                 ledger_key = f"{user_id}_{strategy_config['name']}"
                                 if ledger_key not in self.ledger_data:
                                     self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
                                 
-                                self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
+                                self.ledger_data[ledger_key]['pnl_sum'] = new_pnl_sum
                                 
                                 # Update ledger with manual closure
                                 self.update_ledger(
                                     user_id, strategy_config, "manually_closed",
                                     0, buy_price, current_price,  # signal 0 for closure
-                                    new_balance, pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
+                                    new_balance, pnl_percent, new_pnl_sum,
                                     trade_amount, order_id
                                 )
                                 
@@ -1489,10 +1881,20 @@ class UnifiedSignalGenerator:
                 if not self.should_generate_signal(strategy_config):
                     continue
                 
-                # Check old trades from ledger before generating new signals
-                old_trade_updated = self.check_old_trades_from_ledger(client, user_id, strategy_config)
-                if old_trade_updated:
-                    logger.info(f"Old trade updated for {symbol}, proceeding with new signal generation")
+                # Check old trades from ledger before generating new signals (only if we haven't processed recently)
+                ledger_key = f"{user_id}_{strategy_config['name']}"
+                if ledger_key not in self.ledger_data:
+                    self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0, 'last_old_trade_check': 0}
+                
+                # Only check old trades if we haven't done so recently (every 5 minutes)
+                current_time = time.time()
+                last_check = self.ledger_data[ledger_key].get('last_old_trade_check', 0)
+                
+                if current_time - last_check > 300:  # 5 minutes
+                    old_trade_updated = self.check_old_trades_from_ledger(client, user_id, strategy_config)
+                    if old_trade_updated:
+                        logger.info(f"Old trade updated for {symbol}, proceeding with new signal generation")
+                    self.ledger_data[ledger_key]['last_old_trade_check'] = current_time
                 
                 # Generate signals using existing generators
                 strategy_signal = self.generate_strategy_signal(strategy_config)
@@ -1547,13 +1949,7 @@ class UnifiedSignalGenerator:
                     close_reason = ""
                     
                     # Check for TP/SL hits first
-                    closed_pnl_data = self.get_closed_pnl(client, symbol, limit=10)
-                    for pnl_record in closed_pnl_data:
-                        if pnl_record.get('side') == position_side and float(pnl_record.get('size', 0)) > 0:
-                            # Position was closed by TP/SL
-                            should_close = True
-                            close_reason = "tp" if float(pnl_record.get('closedPnl', 0)) > 0 else "sl"
-                            break
+                    should_close, close_reason = self.check_tp_sl_hit(client, symbol, position_side, position_key)
                     
                     # If not TP/SL, check signal changes
                     if not should_close:
@@ -1706,7 +2102,9 @@ class UnifiedSignalGenerator:
                             'entry_price': current_price,
                             'side': side,
                             'qty': qty,
-                            'trade_amount': actual_position_size
+                            'trade_amount': actual_position_size,
+                            'tp_price': tp_price,
+                            'sl_price': sl_price
                         }
                         
                         # Calculate cumulative PnL
@@ -1743,9 +2141,15 @@ class UnifiedSignalGenerator:
             logger.error(f"Error executing trading logic for user {user_config['name']}: {e}")
     
     def run_continuous_trading(self, user_id: int):
-        """Run continuous trading for a user"""
+        """Run continuous trading for a user with background TP/SL monitoring"""
         try:
             logger.info(f"Starting continuous trading for user {user_id}")
+            
+            # Start background TP/SL monitoring
+            import threading
+            tp_sl_monitor = threading.Thread(target=self.monitor_tp_sl_hits, args=(user_id,), daemon=True)
+            tp_sl_monitor.start()
+            logger.info("TP/SL monitoring started in background")
             
             while True:
                 try:
@@ -1771,6 +2175,154 @@ class UnifiedSignalGenerator:
                     
         except Exception as e:
             logger.error(f"Error in continuous trading: {e}")
+    
+    def monitor_tp_sl_hits(self, user_id: int):
+        """Background thread to monitor TP/SL hits for all active positions"""
+        try:
+            logger.info(f"Starting TP/SL monitoring for user {user_id}")
+            
+            while True:
+                try:
+                    # Get user configuration
+                    user_config = self.get_user_config(user_id)
+                    if user_config is None:
+                        time.sleep(30)  # Wait 30 seconds before retrying
+                        continue
+                    
+                    # Get Bybit client
+                    client = self.get_bybit_client(user_id)
+                    if not client:
+                        time.sleep(30)
+                        continue
+                    
+                    # Check all active positions for TP/SL hits
+                    for position_key, position_data in list(self.active_positions.items()):
+                        if not position_key.startswith(f"{user_id}_"):
+                            continue
+                        
+                        # Extract strategy info from position key
+                        strategy_name = position_key.split('_', 1)[1] if '_' in position_key else ""
+                        if not strategy_name:
+                            continue
+                        
+                        # Get strategy config
+                        strategy_configs = self.get_strategy_configs(user_config['strategies'])
+                        strategy_config = None
+                        for config in strategy_configs:
+                            if config['name'] == strategy_name:
+                                strategy_config = config
+                                break
+                        
+                        if not strategy_config:
+                            continue
+                        
+                        symbol = f"{strategy_config['symbol'].upper()}USDT"
+                        position_side = position_data.get('side', '')
+                        
+                        # Check for TP/SL hit
+                        should_close, close_reason = self.check_tp_sl_hit(client, symbol, position_side, position_key)
+                        
+                        if should_close:
+                            logger.info(f"TP/SL hit detected in background for {symbol}: {close_reason}")
+                            
+                            # Handle the TP/SL hit
+                            self.handle_tp_sl_hit(client, user_id, strategy_config, symbol, position_key, close_reason)
+                    
+                    # Wait before next check
+                    time.sleep(10)  # Check every 10 seconds
+                    
+                except Exception as e:
+                    logger.error(f"Error in TP/SL monitoring: {e}")
+                    time.sleep(30)  # Wait 30 seconds before retrying
+                    
+        except Exception as e:
+            logger.error(f"Error in TP/SL monitoring thread: {e}")
+    
+    def handle_tp_sl_hit(self, client: HTTP, user_id: int, strategy_config: Dict[str, Any], 
+                        symbol: str, position_key: str, close_reason: str):
+        """Handle TP/SL hit and update ledger"""
+        try:
+            if position_key not in self.active_positions:
+                return
+            
+            position_data = self.active_positions[position_key]
+            entry_price = position_data.get('entry_price', 0)
+            trade_amount = position_data.get('trade_amount', 0)
+            order_id = position_data.get('order_id', "")
+            
+            # Get exit price using improved order history logic
+            exit_price = 0.0
+            order_resp = client.get_order_history(
+                category="linear",
+                symbol=symbol,
+                limit=50
+            )
+            
+            if order_resp.get("retCode") == 0 and order_resp["result"]["list"]:
+                orders = order_resp["result"]["list"]
+                
+                # Find the opening order time
+                opening_order_time = None
+                for order in orders:
+                    if order.get('orderId') == order_id:
+                        opening_order_time = int(order.get('createdTime', 0))
+                        break
+                
+                if opening_order_time:
+                    # Look for closing orders (opposite side) that were created after the opening order
+                    for order in orders:
+                        order_side = order.get('side', '')
+                        order_time = int(order.get('createdTime', 0))
+                        order_status = order.get('orderStatus', '')
+                        
+                        # For long position (Buy), look for Sell orders
+                        # For short position (Sell), look for Buy orders
+                        expected_closing_side = "Sell" if position_data.get('side') == "Buy" else "Buy"
+                        
+                        if (order_side == expected_closing_side and 
+                            order_time > opening_order_time and 
+                            order_status == 'Filled'):
+                            exit_price = float(order.get('avgPrice', 0))
+                            logger.info(f"Found exit price from closing order: {exit_price}")
+                            break
+            
+            if exit_price == 0:
+                # Fallback to current price if no closing order found
+                exit_price = self.get_current_price(client, symbol) or entry_price
+                logger.warning(f"Using current price as exit price: {exit_price}")
+            
+            # Calculate PnL
+            if position_data.get('side') == "Buy":  # Long position
+                pnl_percent = ((exit_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+            else:  # Short position
+                pnl_percent = ((entry_price - exit_price) / entry_price) * 100 if entry_price > 0 else 0
+            
+            # Get real balance after TP/SL hit
+            new_balance = self.get_account_balance(client)
+            
+            # Calculate cumulative PnL
+            ledger_key = f"{user_id}_{strategy_config['name']}"
+            if ledger_key not in self.ledger_data:
+                self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
+            
+            # Update pnl_sum with actual PnL
+            self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
+            
+            # Update ledger with TP/SL hit
+            self.update_ledger(
+                user_id, strategy_config, close_reason,
+                0, entry_price, exit_price,  # signal 0 for TP/SL hit
+                new_balance, pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
+                trade_amount, order_id
+            )
+            
+            # Remove from active positions
+            del self.active_positions[position_key]
+            
+            logger.info(f"TP/SL hit handled for {symbol}: {close_reason}, PnL {pnl_percent:.2f}%")
+            
+        except Exception as e:
+            logger.error(f"Error handling TP/SL hit: {e}")
 
 def main():
     """Main function"""
