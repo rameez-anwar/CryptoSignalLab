@@ -80,7 +80,7 @@ class UnifiedSignalGenerator:
     
     def get_ledger_table_name(self, user_id: int, strategy_config: Dict[str, Any]) -> str:
         """Generate consistent ledger table name"""
-        return f"user_{user_id}_{strategy_config['exchange']}_{strategy_config['symbol']}_{strategy_config['time_horizon']}"
+        return f"user_{user_id}_{strategy_config['name']}"
     
     def get_user_config(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Get user configuration from database"""
@@ -359,8 +359,8 @@ class UnifiedSignalGenerator:
             
             # Check if we've already generated the initial signal for this strategy
             if strategy_key not in self.last_signal_times:
-                # First time running - generate signal from last hour boundary
-                logger.info(f"First run for {strategy_config['name']} - generating signal from last hour boundary")
+                # First time running - generate signal immediately
+                logger.info(f"First run for {strategy_config['name']} - generating signal immediately")
                 self.last_signal_times[strategy_key] = now
                 return True
             
@@ -375,7 +375,7 @@ class UnifiedSignalGenerator:
             if time_horizon == '1h':
                 interval_minutes = 60
                 # Check if we're at minute 1 of each hour (01:01, 02:01, 03:01, etc.)
-                if now.minute == 1 and now.second < 30:  # Within first 30 seconds of minute 1
+                if now.minute == 1:  # Within minute 1 of each hour
                     if minutes_since_last >= interval_minutes:  # Ensure at least 1 hour has passed
                         self.last_signal_times[strategy_key] = now
                         logger.info(f"1h signal generation triggered for {strategy_config['name']} at {now.strftime('%H:%M:%S')}")
@@ -383,12 +383,12 @@ class UnifiedSignalGenerator:
             elif time_horizon == '4h':
                 interval_minutes = 240
                 # Check if we're at minute 1 of 4-hour boundaries (01:01, 05:01, 09:01, etc.)
-                if now.hour % 4 == 1 and now.minute == 1 and now.second < 30:
+                if now.hour % 4 == 1 and now.minute == 1:
                     if minutes_since_last >= interval_minutes:  # Ensure at least 4 hours have passed
                         self.last_signal_times[strategy_key] = now
                         logger.info(f"4h signal generation triggered for {strategy_config['name']} at {now.strftime('%H:%M:%S')}")
                         return True
-                elif now.hour % 4 == 0 and now.minute == 1 and now.second < 30:
+                elif now.hour % 4 == 0 and now.minute == 1:
                     # Handle 00:01, 04:01, 08:01, etc.
                     if minutes_since_last >= interval_minutes:  # Ensure at least 4 hours have passed
                         self.last_signal_times[strategy_key] = now
@@ -397,7 +397,7 @@ class UnifiedSignalGenerator:
             elif time_horizon == '1d':
                 interval_minutes = 1440
                 # Check if we're at minute 1 of daily boundaries (00:01)
-                if now.hour == 0 and now.minute == 1 and now.second < 30:
+                if now.hour == 0 and now.minute == 1:
                     if minutes_since_last >= interval_minutes:  # Ensure at least 1 day has passed
                         self.last_signal_times[strategy_key] = now
                         logger.info(f"1d signal generation triggered for {strategy_config['name']} at {now.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -405,7 +405,7 @@ class UnifiedSignalGenerator:
             else:
                 # Default to 1 hour
                 interval_minutes = 60
-                if now.minute == 1 and now.second < 30:
+                if now.minute == 1:
                     if minutes_since_last >= interval_minutes:
                         self.last_signal_times[strategy_key] = now
                         logger.info(f"Default 1h signal generation triggered for {strategy_config['name']} at {now.strftime('%H:%M:%S')}")
@@ -1506,7 +1506,7 @@ class UnifiedSignalGenerator:
                     logger.info(f"Strategy-only signal for {symbol}: {combined_signal}")
                 
                 # Define position_key at the beginning
-                position_key = f"{user_id}_{symbol}"
+                position_key = f"{user_id}_{strategy_config['name']}"
                 
                 # Check for manual closure first
                 if position_key in self.active_positions:
