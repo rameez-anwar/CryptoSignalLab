@@ -277,11 +277,12 @@ class UnifiedSignalGenerator:
             
             if positions['retCode'] == 0:
                 for pos in positions['result']['list']:
-                    if float(pos['size']) > 0:
+                    size = float(pos.get('size', 0))
+                    if size > 0:
                         position_info = {
-                            'size': float(pos['size']),
-                            'side': pos['side'],
-                            'entry_price': float(pos['avgPrice']),
+                            'size': size,
+                            'side': pos.get('side', ''),
+                            'entry_price': float(pos.get('avgPrice', 0)),
                             'unrealized_pnl': float(pos.get('unrealisedPnl', 0)),
                             'position_value': float(pos.get('positionValue', 0)),
                             'mark_price': float(pos.get('markPrice', 0)),
@@ -343,22 +344,12 @@ class UnifiedSignalGenerator:
             
         except Exception as e:
             logger.error(f"Error getting closed PnL: {e}")
-            return []
+            return [] 
     
     def should_generate_signal(self, strategy_config: Dict[str, Any]) -> bool:
         """Check if we should generate a signal based on time horizon"""
         try:
             time_horizon = strategy_config.get('time_horizon', '1h')
-            
-            # Convert time horizon to minutes
-            if time_horizon == '1h':
-                interval_minutes = 60
-            elif time_horizon == '4h':
-                interval_minutes = 240
-            elif time_horizon == '1d':
-                interval_minutes = 1440
-            else:
-                interval_minutes = 60  # Default to 1 hour
             
             # Get current time
             now = datetime.datetime.now()
@@ -373,22 +364,81 @@ class UnifiedSignalGenerator:
                 self.last_signal_times[strategy_key] = now
                 return True
             
-            # Check if we're at the start of an hour (for 1h), 4-hour boundary (for 4h), etc.
+            # Get the last signal generation time
+            last_signal_time = self.last_signal_times[strategy_key]
+            
+            # Calculate time difference
+            time_diff = now - last_signal_time
+            minutes_since_last = time_diff.total_seconds() / 60
+            
+            # Determine interval based on time horizon
             if time_horizon == '1h':
-                # Should generate at exact hour boundaries (00:00, 01:00, 02:00, etc.)
-                if now.minute == 0 and now.second < 30:  # Within first 30 seconds of the hour
-                    self.last_signal_times[strategy_key] = now
-                    return True
+                interval_minutes = 60
+                # Check if we're at minute 1 of each hour (01:01, 02:01, 03:01, etc.)
+                if now.minute == 1 and now.second < 30:  # Within first 30 seconds of minute 1
+                    if minutes_since_last >= interval_minutes:  # Ensure at least 1 hour has passed
+                        self.last_signal_times[strategy_key] = now
+                        logger.info(f"1h signal generation triggered for {strategy_config['name']} at {now.strftime('%H:%M:%S')}")
+                        return True
             elif time_horizon == '4h':
-                # Should generate at 4-hour boundaries (00:00, 04:00, 08:00, etc.)
-                if now.hour % 4 == 0 and now.minute == 0 and now.second < 30:
-                    self.last_signal_times[strategy_key] = now
-                    return True
+                interval_minutes = 240
+                # Check if we're at minute 1 of 4-hour boundaries (01:01, 05:01, 09:01, etc.)
+                if now.hour % 4 == 1 and now.minute == 1 and now.second < 30:
+                    if minutes_since_last >= interval_minutes:  # Ensure at least 4 hours have passed
+                        self.last_signal_times[strategy_key] = now
+                        logger.info(f"4h signal generation triggered for {strategy_config['name']} at {now.strftime('%H:%M:%S')}")
+                        return True
+                elif now.hour % 4 == 0 and now.minute == 1 and now.second < 30:
+                    # Handle 00:01, 04:01, 08:01, etc.
+                    if minutes_since_last >= interval_minutes:  # Ensure at least 4 hours have passed
+                        self.last_signal_times[strategy_key] = now
+                        logger.info(f"4h signal generation triggered for {strategy_config['name']} at {now.strftime('%H:%M:%S')}")
+                        return True
             elif time_horizon == '1d':
-                # Should generate at daily boundaries (00:00)
-                if now.hour == 0 and now.minute == 0 and now.second < 30:
-                    self.last_signal_times[strategy_key] = now
-                    return True
+                interval_minutes = 1440
+                # Check if we're at minute 1 of daily boundaries (00:01)
+                if now.hour == 0 and now.minute == 1 and now.second < 30:
+                    if minutes_since_last >= interval_minutes:  # Ensure at least 1 day has passed
+                        self.last_signal_times[strategy_key] = now
+                        logger.info(f"1d signal generation triggered for {strategy_config['name']} at {now.strftime('%Y-%m-%d %H:%M:%S')}")
+                        return True
+            else:
+                # Default to 1 hour
+                interval_minutes = 60
+                if now.minute == 1 and now.second < 30:
+                    if minutes_since_last >= interval_minutes:
+                        self.last_signal_times[strategy_key] = now
+                        logger.info(f"Default 1h signal generation triggered for {strategy_config['name']} at {now.strftime('%H:%M:%S')}")
+                        return True
+            
+            # Calculate next signal time for better logging
+            if time_horizon == '1h':
+                next_hour = now.replace(minute=1, second=0, microsecond=0)
+                if next_hour <= now:
+                    next_hour = next_hour + datetime.timedelta(hours=1)
+            elif time_horizon == '4h':
+                # Find next 4-hour boundary at minute 1
+                current_hour = now.hour
+                next_4h_hour = ((current_hour // 4) * 4 + 4) % 24
+                if next_4h_hour == 0:
+                    next_4h_hour = 0
+                next_hour = now.replace(hour=next_4h_hour, minute=1, second=0, microsecond=0)
+                if next_hour <= now:
+                    next_hour = next_hour + datetime.timedelta(hours=4)
+            elif time_horizon == '1d':
+                next_hour = now.replace(hour=0, minute=1, second=0, microsecond=0) + datetime.timedelta(days=1)
+            else:
+                next_hour = now.replace(minute=1, second=0, microsecond=0)
+                if next_hour <= now:
+                    next_hour = next_hour + datetime.timedelta(hours=1)
+            
+            # Calculate remaining time
+            time_to_next = next_hour - now
+            remaining_minutes = time_to_next.total_seconds() / 60
+            
+            # Log when next signal will be generated
+            if minutes_since_last < interval_minutes:
+                logger.info(f"Signal not ready for {strategy_config['name']}. Time since last: {minutes_since_last:.1f}min, Next signal at: {next_hour.strftime('%H:%M:%S')}, Remaining: {remaining_minutes:.1f}min")
             
             return False
             
@@ -599,7 +649,7 @@ class UnifiedSignalGenerator:
             
         except Exception as e:
             logger.error(f"Error combining signals: {e}")
-            return 0  # Default to neutral
+            return 0  # Default to neutral 
     
     def format_quantity(self, qty: float, symbol: str) -> float:
         """Format quantity according to Bybit's requirements"""
@@ -802,7 +852,7 @@ class UnifiedSignalGenerator:
             
         except Exception as e:
             logger.error(f"Error getting trading fee: {e}")
-            return 0.0
+            return 0.0 
     
     def update_ledger(self, user_id: int, strategy_config: Dict[str, Any], 
                      action: str, signal: int, entry_price: float, exit_price: float, 
@@ -853,12 +903,38 @@ class UnifiedSignalGenerator:
             
             # Apply -0.05% PnL for open/close actions (representing fees)
             if action in ['open', 'tp', 'sl', 'direction_change', 'neutral_signal', 'manually_closed']:
-                native_pnl = -0.05
-                # Deduct the fee from trade amount
-                fee_amount = (native_trade_amount * 0.0005)  # 0.05% of trade amount
-                native_trade_amount -= fee_amount
-                native_trade_amount = round(native_trade_amount, 2)
-                logger.info(f"Applied -0.05% PnL for {action} action, fee: {fee_amount:.2f}, new trade amount: {native_trade_amount}")
+                # For opening trades, just apply the fee
+                if action == 'open':
+                    native_pnl = -0.05
+                    # Deduct the fee from trade amount
+                    fee_amount = (native_trade_amount * 0.0005)  # 0.05% of trade amount
+                    native_trade_amount -= fee_amount
+                    native_trade_amount = round(native_trade_amount, 2)
+                    logger.info(f"Applied -0.05% PnL for {action} action, fee: {fee_amount:.2f}, new trade amount: {native_trade_amount}")
+                else:
+                    # For closing trades, calculate actual PnL based on buy/sell prices and direction
+                    if native_exit_price > 0 and native_entry_price > 0:
+                        # Determine direction from signal
+                        if signal == 1:
+                            direction = 'long'
+                        elif signal == -1:
+                            direction = 'short'
+                        else:
+                            # Try to determine from previous ledger entry
+                            direction = 'long'  # Default fallback
+                        
+                        # Calculate actual PnL
+                        actual_pnl = self.calculate_actual_pnl(native_entry_price, native_exit_price, direction)
+                        native_pnl = actual_pnl
+                        
+                        # Apply fee to trade amount
+                        fee_amount = (native_trade_amount * 0.0005)  # 0.05% of trade amount
+                        native_trade_amount -= fee_amount
+                        native_trade_amount = round(native_trade_amount, 2)
+                        
+                        logger.info(f"Calculated actual PnL for {action}: {actual_pnl:.2f}% (direction: {direction})")
+                    else:
+                        native_pnl = -0.05  # Fallback to fee only
             else:
                 # For other actions, apply the actual PnL to trade amount
                 if native_pnl != 0:
@@ -922,6 +998,463 @@ class UnifiedSignalGenerator:
             
         except Exception as e:
             logger.error(f"Error updating ledger: {e}")
+    
+    def calculate_actual_pnl(self, buy_price: float, sell_price: float, direction: str) -> float:
+        """Calculate actual PnL percentage based on buy/sell prices and direction"""
+        try:
+            if direction == 'long':
+                # Long position: profit when sell_price > buy_price
+                pnl_percent = ((sell_price - buy_price) / buy_price) * 100
+            elif direction == 'short':
+                # Short position: profit when buy_price > sell_price
+                pnl_percent = ((buy_price - sell_price) / buy_price) * 100
+            else:
+                pnl_percent = 0.0
+            
+            return round(pnl_percent, 2)
+            
+        except Exception as e:
+            logger.error(f"Error calculating PnL: {e}")
+            return 0.0
+    
+    def get_open_orders(self, client: HTTP, symbol: str) -> List[Dict[str, Any]]:
+        """Get open orders for a symbol"""
+        try:
+            response = client.get_open_orders(
+                category="linear",
+                symbol=symbol
+            )
+            
+            if response['retCode'] == 0:
+                return response['result']['list']
+            else:
+                logger.error(f"Failed to get open orders: {response}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error getting open orders: {e}")
+            return []
+    
+    def check_manual_closure(self, client: HTTP, symbol: str, last_order_id: str) -> bool:
+        """Check if the last order was manually closed"""
+        try:
+            # First check if position still exists
+            current_position = self.get_position(client, symbol)
+            if current_position is None or float(current_position.get('size', 0)) == 0:
+                logger.info(f"Position for {symbol} is closed (no position found)")
+                return True
+            
+            # Get order history to check if order was cancelled
+            orders = self.get_order_history(client, symbol, limit=50)
+            
+            for order in orders:
+                if order['orderId'] == last_order_id:
+                    # Check if order was cancelled (manual closure)
+                    if order['orderStatus'] == 'Cancelled':
+                        logger.info(f"Order {last_order_id} was manually cancelled")
+                        return True
+                    # Check if order was partially filled and then cancelled
+                    elif (order['orderStatus'] == 'PartiallyFilled' and 
+                          float(order.get('cumExecQty', 0)) > 0):
+                        logger.info(f"Order {last_order_id} was partially filled and cancelled")
+                        return True
+                    # Check if order was fully filled but position is closed
+                    elif order['orderStatus'] == 'Filled' and current_position is None:
+                        logger.info(f"Order {last_order_id} was filled but position is closed (manual closure)")
+                        return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking manual closure: {e}")
+            return False
+    
+    def handle_manual_closure(self, client: HTTP, user_id: int, strategy_config: Dict[str, Any], 
+                            symbol: str, position_key: str) -> bool:
+        """Handle manual closure and update ledger"""
+        try:
+            if position_key not in self.active_positions:
+                return False
+            
+            position_data = self.active_positions[position_key]
+            order_id = position_data.get('order_id', "")
+            entry_price = position_data.get('entry_price', 0)
+            
+            # Get current price for PnL calculation
+            current_price = self.get_current_price(client, symbol) or entry_price
+            
+            # Calculate PnL (manual closure typically at market price)
+            if position_data.get('side') == "Buy":  # Long position
+                pnl_percent = ((current_price - entry_price) / entry_price) * 100
+            else:  # Short position
+                pnl_percent = ((entry_price - current_price) / entry_price) * 100
+            
+            # Get real balance after manual closure
+            new_balance = self.get_account_balance(client)
+            
+            # Calculate cumulative PnL
+            ledger_key = f"{user_id}_{strategy_config['name']}"
+            if ledger_key not in self.ledger_data:
+                self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
+            
+            self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
+            
+            # Get trade amount
+            trade_amount = position_data.get('trade_amount', 0)
+            
+            # Update ledger with manual closure
+            self.update_ledger(
+                user_id, strategy_config, "manually_closed",
+                0, entry_price, current_price,  # signal 0 for manual closure
+                new_balance, pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
+                trade_amount, order_id
+            )
+            
+            # Remove from active positions
+            del self.active_positions[position_key]
+            
+            logger.info(f"Manual closure recorded for {symbol}: PnL {pnl_percent:.2f}%")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error handling manual closure: {e}")
+            return False
+    
+    def check_margin_availability(self, client: HTTP, symbol: str, qty: float, side: str) -> bool:
+        """Check if we have enough margin to place the order"""
+        try:
+            # Get wallet balance to check available funds
+            balance_data = client.get_wallet_balance(accountType="UNIFIED")
+            
+            if balance_data['retCode'] == 0:
+                for account in balance_data['result']['list']:
+                    if account.get('coin'):
+                        for coin in account['coin']:
+                            if coin['coin'] == 'USDT':
+                                # Use walletBalance as the primary balance source
+                                wallet_balance = float(coin['walletBalance'])
+                                
+                                # Try to get availableToWithdraw, fallback to walletBalance if empty
+                                available_str = coin.get('availableToWithdraw', '')
+                                if available_str and available_str.strip():
+                                    available_balance = float(available_str)
+                                else:
+                                    # If availableToWithdraw is empty, use walletBalance
+                                    available_balance = wallet_balance
+                                
+                                # Get current price to calculate required margin
+                                current_price = self.get_current_price(client, symbol)
+                                if current_price is None:
+                                    logger.warning(f"Could not get current price for {symbol}")
+                                    return False
+                                
+                                # Calculate required margin (position value)
+                                position_value = qty * current_price
+                                
+                                # Check if we have enough available balance
+                                if available_balance >= position_value * 1.1:  # 10% buffer for fees
+                                    logger.info(f"Sufficient margin: {available_balance:.2f} USDT available, {position_value:.2f} USDT required")
+                                    return True
+                                else:
+                                    logger.warning(f"Insufficient margin: {available_balance:.2f} USDT available, {position_value:.2f} USDT required")
+                                    return False
+            
+            logger.warning("Could not find USDT balance in wallet data")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking margin availability: {e}")
+            return False
+    
+    def handle_position_closure(self, client: HTTP, user_id: int, strategy_config: Dict[str, Any], 
+                              symbol: str, position_key: str, new_signal: int) -> bool:
+        """Handle position closure and determine what happened"""
+        try:
+            if position_key not in self.active_positions:
+                return False
+            
+            position_data = self.active_positions[position_key]
+            order_id = position_data.get('order_id', "")
+            entry_price = position_data.get('entry_price', 0)
+            last_signal = position_data.get('last_signal', 0)
+            trade_amount = position_data.get('trade_amount', 0)
+            
+            # Determine what happened to the position
+            closure_reason = ""
+            exit_price = 0.0
+            
+            # Check for TP/SL hit first
+            closed_pnl_data = self.get_closed_pnl(client, symbol, limit=10)
+            for pnl_record in closed_pnl_data:
+                if pnl_record.get('side') == position_data.get('side', '') and float(pnl_record.get('size', 0)) > 0:
+                    # Position was closed by TP/SL
+                    closure_reason = "tp" if float(pnl_record.get('closedPnl', 0)) > 0 else "sl"
+                    exit_price = float(pnl_record.get('execPrice', 0))
+                    logger.info(f"TP/SL hit detected for {symbol}: {closure_reason}")
+                    break
+            
+            # If not TP/SL, check for direction change
+            if not closure_reason:
+                if (new_signal == 1 and last_signal == -1) or (new_signal == -1 and last_signal == 1):
+                    closure_reason = "direction_change"
+                    exit_price = self.get_current_price(client, symbol) or entry_price
+                    logger.info(f"Direction change detected for {symbol}")
+                else:
+                    # Must be manual closure
+                    closure_reason = "manually_closed"
+                    exit_price = self.get_current_price(client, symbol) or entry_price
+                    logger.info(f"Manual closure detected for {symbol}")
+            
+            # Calculate PnL
+            if position_data.get('side') == "Buy":  # Long position
+                pnl_percent = ((exit_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+            else:  # Short position
+                pnl_percent = ((entry_price - exit_price) / entry_price) * 100 if entry_price > 0 else 0
+            
+            # Get real balance after closure
+            new_balance = self.get_account_balance(client)
+            
+            # Calculate cumulative PnL
+            ledger_key = f"{user_id}_{strategy_config['name']}"
+            if ledger_key not in self.ledger_data:
+                self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
+            
+            # Update pnl_sum with actual PnL (including the -0.05% fee)
+            self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
+            
+            # Update ledger with closure
+            self.update_ledger(
+                user_id, strategy_config, closure_reason,
+                new_signal, entry_price, exit_price,
+                self.get_account_balance(client), pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
+                trade_amount, order_id
+            )
+            
+            # Remove from active positions
+            del self.active_positions[position_key]
+            
+            logger.info(f"Position closure handled for {symbol}: {closure_reason}, PnL {pnl_percent:.2f}%")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error handling position closure: {e}")
+            return False
+    
+    def check_old_trades_from_ledger(self, client: HTTP, user_id: int, strategy_config: Dict[str, Any]) -> bool:
+        """Check old trades from ledger using order_id and update their status"""
+        try:
+            # Get the ledger table name
+            table_name = self.get_ledger_table_name(user_id, strategy_config)
+            
+            # Query the ledger for the most recent 'buy' action (open trade)
+            query = text(f"""
+                SELECT order_id, buy_price, trade_amount, datetime 
+                FROM execution.{table_name} 
+                WHERE action = 'buy' 
+                ORDER BY datetime DESC 
+                LIMIT 1
+            """)
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(query)
+                row = result.fetchone()
+                
+                if row and row[0]:  # If we have an order_id
+                    order_id = row[0]
+                    buy_price = row[1]
+                    trade_amount = row[2]
+                    open_time = row[3]
+                    
+                    logger.info(f"Found old trade in ledger: order_id={order_id}, buy_price={buy_price}")
+                    
+                    # Check if this order was executed and closed
+                    symbol = f"{strategy_config['symbol'].upper()}USDT"
+                    
+                    # Check for TP/SL hits first
+                    closed_pnl_data = self.get_closed_pnl(client, symbol, limit=20)
+                    for pnl_record in closed_pnl_data:
+                        if pnl_record.get('orderId') == order_id:
+                            # Order was closed by TP/SL
+                            exit_price = float(pnl_record.get('execPrice', 0))
+                            closed_pnl = float(pnl_record.get('closedPnl', 0))
+                            closure_reason = "tp" if closed_pnl > 0 else "sl"
+                            
+                            # Calculate PnL
+                            # Query the ledger to get the original predicted_direction
+                            direction_query = text(f"""
+                                SELECT predicted_direction 
+                                FROM execution.{table_name} 
+                                WHERE order_id = :order_id AND action = 'buy'
+                            """)
+                            
+                            with self.engine.connect() as conn:
+                                direction_result = conn.execute(direction_query, {'order_id': order_id})
+                                direction_row = direction_result.fetchone()
+                                predicted_direction = direction_row[0] if direction_row else 'long'
+                                
+                                # If predicted_direction is 'neutral', try to determine from order side using Bybit API
+                                if predicted_direction == 'neutral':
+                                    # Get order details from Bybit API
+                                    orders = self.get_order_history(client, symbol, limit=50)
+                                    for order in orders:
+                                        if order['orderId'] == order_id:
+                                            if order.get('side') == 'Sell':
+                                                direction = 'short'
+                                            else:
+                                                direction = 'long'  # Default to long
+                                            break
+                                    else:
+                                        direction = 'long'  # Default fallback
+                                else:
+                                    direction = 'long' if predicted_direction == 'long' else 'short'
+                            
+                            pnl_percent = self.calculate_actual_pnl(buy_price, exit_price, direction)
+                            
+                            # Get real balance
+                            new_balance = self.get_account_balance(client)
+                            
+                            # Update ledger data
+                            ledger_key = f"{user_id}_{strategy_config['name']}"
+                            if ledger_key not in self.ledger_data:
+                                self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
+                            
+                            self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
+                            
+                            # Update ledger with closure
+                            self.update_ledger(
+                                user_id, strategy_config, closure_reason,
+                                0, buy_price, exit_price,  # signal 0 for closure
+                                new_balance, pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
+                                trade_amount, order_id
+                            )
+                            
+                            logger.info(f"Updated ledger for old trade {order_id}: {closure_reason}, PnL {pnl_percent:.2f}%")
+                            return True
+                    
+                    # Check if order was manually closed
+                    orders = self.get_order_history(client, symbol, limit=50)
+                    for order in orders:
+                        if order['orderId'] == order_id:
+                            if order['orderStatus'] == 'Cancelled':
+                                # Order was manually cancelled
+                                current_price = self.get_current_price(client, symbol) or buy_price
+                                
+                                # Determine direction from the original trade (check if it was short or long)
+                                # Query the ledger to get the original predicted_direction
+                                direction_query = text(f"""
+                                    SELECT predicted_direction 
+                                    FROM execution.{table_name} 
+                                    WHERE order_id = :order_id AND action = 'buy'
+                                """)
+                                
+                                with self.engine.connect() as conn:
+                                    direction_result = conn.execute(direction_query, {'order_id': order_id})
+                                    direction_row = direction_result.fetchone()
+                                    predicted_direction = direction_row[0] if direction_row else 'long'
+                                    
+                                    # If predicted_direction is 'neutral', try to determine from order side using Bybit API
+                                    if predicted_direction == 'neutral':
+                                        # Get order details from Bybit API
+                                        orders = self.get_order_history(client, symbol, limit=50)
+                                        for order in orders:
+                                            if order['orderId'] == order_id:
+                                                if order.get('side') == 'Sell':
+                                                    direction = 'short'
+                                                else:
+                                                    direction = 'long'  # Default to long
+                                                break
+                                        else:
+                                            direction = 'long'  # Default fallback
+                                    else:
+                                        direction = 'long' if predicted_direction == 'long' else 'short'
+                                
+                                # Calculate PnL at current price
+                                pnl_percent = self.calculate_actual_pnl(buy_price, current_price, direction)
+                                
+                                # Get real balance
+                                new_balance = self.get_account_balance(client)
+                                
+                                # Update ledger data
+                                ledger_key = f"{user_id}_{strategy_config['name']}"
+                                if ledger_key not in self.ledger_data:
+                                    self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
+                                
+                                self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
+                                
+                                # Update ledger with manual closure
+                                self.update_ledger(
+                                    user_id, strategy_config, "manually_closed",
+                                    0, buy_price, current_price,  # signal 0 for closure
+                                    new_balance, pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
+                                    trade_amount, order_id
+                                )
+                                
+                                logger.info(f"Updated ledger for manually closed trade {order_id}: PnL {pnl_percent:.2f}%")
+                                return True
+                    
+                    # Check if position still exists
+                    current_position = self.get_position(client, symbol)
+                    if current_position is None or float(current_position.get('size', 0)) == 0:
+                        # Position was closed but we couldn't determine how - assume manual closure
+                        current_price = self.get_current_price(client, symbol) or buy_price
+                        
+                        # Determine direction from the original trade
+                        direction_query = text(f"""
+                            SELECT predicted_direction 
+                            FROM execution.{table_name} 
+                            WHERE order_id = :order_id AND action = 'buy'
+                        """)
+                        
+                        with self.engine.connect() as conn:
+                            direction_result = conn.execute(direction_query, {'order_id': order_id})
+                            direction_row = direction_result.fetchone()
+                            predicted_direction = direction_row[0] if direction_row else 'long'
+                            
+                            # If predicted_direction is 'neutral', try to determine from order side using Bybit API
+                            if predicted_direction == 'neutral':
+                                # Get order details from Bybit API
+                                orders = self.get_order_history(client, symbol, limit=50)
+                                for order in orders:
+                                    if order['orderId'] == order_id:
+                                        if order.get('side') == 'Sell':
+                                            direction = 'short'
+                                        else:
+                                            direction = 'long'  # Default to long
+                                        break
+                                else:
+                                    direction = 'long'  # Default fallback
+                            else:
+                                direction = 'long' if predicted_direction == 'long' else 'short'
+                        
+                        # Calculate PnL at current price
+                        pnl_percent = self.calculate_actual_pnl(buy_price, current_price, direction)
+                        
+                        # Get real balance
+                        new_balance = self.get_account_balance(client)
+                        
+                        # Update ledger data
+                        ledger_key = f"{user_id}_{strategy_config['name']}"
+                        if ledger_key not in self.ledger_data:
+                            self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
+                        
+                        self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
+                        
+                        # Update ledger with manual closure
+                        self.update_ledger(
+                            user_id, strategy_config, "manually_closed",
+                            0, buy_price, current_price,  # signal 0 for closure
+                            new_balance, pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
+                            trade_amount, order_id
+                        )
+                        
+                        logger.info(f"Updated ledger for closed trade {order_id} (unknown reason): PnL {pnl_percent:.2f}%")
+                        return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking old trades from ledger: {e}")
+            return False 
     
     def execute_trading_logic(self, user_id: int, user_config: Dict[str, Any]):
         """Execute trading logic for a user"""
@@ -1002,14 +1535,21 @@ class UnifiedSignalGenerator:
                 
                 if current_position:
                     # Position exists - check if we should close it
-                    position_side = current_position['side']
+                    position_side = current_position.get('side', '')
+                    position_size = float(current_position.get('size', 0))
+                    
+                    # Skip if position size is 0
+                    if position_size == 0:
+                        logger.info(f"Position size is 0 for {symbol}, skipping position checks")
+                        continue
+                    
                     should_close = False
                     close_reason = ""
                     
                     # Check for TP/SL hits first
                     closed_pnl_data = self.get_closed_pnl(client, symbol, limit=10)
                     for pnl_record in closed_pnl_data:
-                        if pnl_record['side'] == position_side and float(pnl_record['size']) > 0:
+                        if pnl_record.get('side') == position_side and float(pnl_record.get('size', 0)) > 0:
                             # Position was closed by TP/SL
                             should_close = True
                             close_reason = "tp" if float(pnl_record.get('closedPnl', 0)) > 0 else "sl"
@@ -1023,18 +1563,19 @@ class UnifiedSignalGenerator:
                     
                     if should_close:
                         # Close position
-                        if self.close_position(client, symbol, position_side, current_position['size']):
+                        if self.close_position(client, symbol, position_side, position_size):
                             # Get exit price and calculate PnL
-                            exit_price = self.get_current_price(client, symbol) or current_position['mark_price']
+                            exit_price = self.get_current_price(client, symbol) or current_position.get('mark_price', 0)
+                            entry_price = current_position.get('entry_price', 0)
                             
                             # Get real balance after closing
                             new_balance = self.get_account_balance(client)
                             
                             # Calculate PnL including fees
                             if position_side == "Buy":  # Long position
-                                pnl_percent = ((exit_price - current_position['entry_price']) / current_position['entry_price']) * 100
+                                pnl_percent = ((exit_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
                             else:  # Short position
-                                pnl_percent = ((current_position['entry_price'] - exit_price) / current_position['entry_price']) * 100
+                                pnl_percent = ((entry_price - exit_price) / entry_price) * 100 if entry_price > 0 else 0
                             
                             # Get closing fee
                             close_fee = 0.0
@@ -1042,8 +1583,8 @@ class UnifiedSignalGenerator:
                                 close_fee = self.get_trading_fee(client, symbol, self.active_positions[position_key]['order_id'])
                             
                             # Adjust PnL for fees
-                            position_value = current_position['size'] * current_position['entry_price']
-                            fee_percent = (close_fee / position_value) * 100
+                            position_value = position_size * entry_price if entry_price > 0 else 0
+                            fee_percent = (close_fee / position_value) * 100 if position_value > 0 else 0
                             pnl_percent -= fee_percent
                             
                             # Calculate cumulative PnL
@@ -1058,12 +1599,15 @@ class UnifiedSignalGenerator:
                             # Get order ID for ledger
                             order_id = self.active_positions.get(position_key, {}).get('order_id', "")
                             
+                            # Get trade amount from active positions
+                            trade_amount = self.active_positions.get(position_key, {}).get('trade_amount', 0.0)
+                            
                             # Update ledger with real balance and actual PnL
                             self.update_ledger(
                                 user_id, strategy_config, close_reason,
-                                combined_signal, current_position['entry_price'], exit_price,
+                                combined_signal, entry_price, exit_price,
                                 self.get_account_balance(client), pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
-                                actual_position_size, order_id
+                                trade_amount, order_id
                             )
                             
                             # Remove from active positions
@@ -1088,7 +1632,7 @@ class UnifiedSignalGenerator:
                             # Same direction - no PnL change, just log the current state
                             self.update_ledger(
                                 user_id, strategy_config, "same_direction",
-                                combined_signal, current_position['entry_price'], 0.0,
+                                combined_signal, entry_price, 0.0,
                                 self.get_account_balance(client), 0.0, self.ledger_data[ledger_key]['pnl_sum'],
                                 trade_amount, order_id
                             )
@@ -1227,379 +1771,6 @@ class UnifiedSignalGenerator:
                     
         except Exception as e:
             logger.error(f"Error in continuous trading: {e}")
-
-    def get_open_orders(self, client: HTTP, symbol: str) -> List[Dict[str, Any]]:
-        """Get open orders for a symbol"""
-        try:
-            response = client.get_open_orders(
-                category="linear",
-                symbol=symbol
-            )
-            
-            if response['retCode'] == 0:
-                return response['result']['list']
-            else:
-                logger.error(f"Failed to get open orders: {response}")
-                return []
-                
-        except Exception as e:
-            logger.error(f"Error getting open orders: {e}")
-            return []
-    
-    def check_manual_closure(self, client: HTTP, symbol: str, last_order_id: str) -> bool:
-        """Check if the last order was manually closed"""
-        try:
-            # First check if position still exists
-            current_position = self.get_position(client, symbol)
-            if current_position is None or float(current_position.get('size', 0)) == 0:
-                logger.info(f"Position for {symbol} is closed (no position found)")
-                return True
-            
-            # Get order history to check if order was cancelled
-            orders = self.get_order_history(client, symbol, limit=50)
-            
-            for order in orders:
-                if order['orderId'] == last_order_id:
-                    # Check if order was cancelled (manual closure)
-                    if order['orderStatus'] == 'Cancelled':
-                        logger.info(f"Order {last_order_id} was manually cancelled")
-                        return True
-                    # Check if order was partially filled and then cancelled
-                    elif (order['orderStatus'] == 'PartiallyFilled' and 
-                          float(order.get('cumExecQty', 0)) > 0):
-                        logger.info(f"Order {last_order_id} was partially filled and cancelled")
-                        return True
-                    # Check if order was fully filled but position is closed
-                    elif order['orderStatus'] == 'Filled' and current_position is None:
-                        logger.info(f"Order {last_order_id} was filled but position is closed (manual closure)")
-                        return True
-            
-            return False
-            
-        except Exception as e:
-            logger.error(f"Error checking manual closure: {e}")
-            return False
-    
-    def handle_manual_closure(self, client: HTTP, user_id: int, strategy_config: Dict[str, Any], 
-                            symbol: str, position_key: str) -> bool:
-        """Handle manual closure and update ledger"""
-        try:
-            if position_key not in self.active_positions:
-                return False
-            
-            position_data = self.active_positions[position_key]
-            order_id = position_data.get('order_id', "")
-            entry_price = position_data.get('entry_price', 0)
-            
-            # Get current price for PnL calculation
-            current_price = self.get_current_price(client, symbol) or entry_price
-            
-            # Calculate PnL (manual closure typically at market price)
-            if position_data.get('side') == "Buy":  # Long position
-                pnl_percent = ((current_price - entry_price) / entry_price) * 100
-            else:  # Short position
-                pnl_percent = ((entry_price - current_price) / entry_price) * 100
-            
-            # Get real balance after manual closure
-            new_balance = self.get_account_balance(client)
-            
-            # Calculate cumulative PnL
-            ledger_key = f"{user_id}_{strategy_config['name']}"
-            if ledger_key not in self.ledger_data:
-                self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
-            
-            self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
-            
-            # Get trade amount
-            trade_amount = position_data.get('trade_amount', 0)
-            
-            # Update ledger with manual closure
-            self.update_ledger(
-                user_id, strategy_config, "manually_closed",
-                0, entry_price, current_price,  # signal 0 for manual closure
-                new_balance, pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
-                trade_amount, order_id
-            )
-            
-            # Remove from active positions
-            del self.active_positions[position_key]
-            
-            logger.info(f"Manual closure recorded for {symbol}: PnL {pnl_percent:.2f}%")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error handling manual closure: {e}")
-            return False
-    
-    def get_execution_details(self, client: HTTP, symbol: str, order_id: str) -> Optional[Dict[str, Any]]:
-        """Get execution details for a specific order"""
-        try:
-            response = client.get_executions(
-                category="linear",
-                symbol=symbol,
-                orderId=order_id
-            )
-            
-            if response['retCode'] == 0 and response['result']['list']:
-                return response['result']['list'][0]  # Return first execution
-            else:
-                logger.error(f"Failed to get execution details: {response}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error getting execution details: {e}")
-            return None
-
-    def check_margin_availability(self, client: HTTP, symbol: str, qty: float, side: str) -> bool:
-        """Check if we have enough margin to place the order"""
-        try:
-            # Get wallet balance to check available funds
-            balance_data = client.get_wallet_balance(accountType="UNIFIED")
-            
-            if balance_data['retCode'] == 0:
-                for account in balance_data['result']['list']:
-                    if account.get('coin'):
-                        for coin in account['coin']:
-                            if coin['coin'] == 'USDT':
-                                # Use walletBalance as the primary balance source
-                                wallet_balance = float(coin['walletBalance'])
-                                
-                                # Try to get availableToWithdraw, fallback to walletBalance if empty
-                                available_str = coin.get('availableToWithdraw', '')
-                                if available_str and available_str.strip():
-                                    available_balance = float(available_str)
-                                else:
-                                    # If availableToWithdraw is empty, use walletBalance
-                                    available_balance = wallet_balance
-                                
-                                # Get current price to calculate required margin
-                                current_price = self.get_current_price(client, symbol)
-                                if current_price is None:
-                                    logger.warning(f"Could not get current price for {symbol}")
-                                    return False
-                                
-                                # Calculate required margin (position value)
-                                position_value = qty * current_price
-                                
-                                # Check if we have enough available balance
-                                if available_balance >= position_value * 1.1:  # 10% buffer for fees
-                                    logger.info(f"Sufficient margin: {available_balance:.2f} USDT available, {position_value:.2f} USDT required")
-                                    return True
-                                else:
-                                    logger.warning(f"Insufficient margin: {available_balance:.2f} USDT available, {position_value:.2f} USDT required")
-                                    return False
-            
-            logger.warning("Could not find USDT balance in wallet data")
-            return False
-            
-        except Exception as e:
-            logger.error(f"Error checking margin availability: {e}")
-            return False
-
-    def handle_position_closure(self, client: HTTP, user_id: int, strategy_config: Dict[str, Any], 
-                              symbol: str, position_key: str, new_signal: int) -> bool:
-        """Handle position closure and determine what happened"""
-        try:
-            if position_key not in self.active_positions:
-                return False
-            
-            position_data = self.active_positions[position_key]
-            order_id = position_data.get('order_id', "")
-            entry_price = position_data.get('entry_price', 0)
-            last_signal = position_data.get('last_signal', 0)
-            trade_amount = position_data.get('trade_amount', 0)
-            
-            # Determine what happened to the position
-            closure_reason = ""
-            exit_price = 0.0
-            
-            # Check for TP/SL hit first
-            closed_pnl_data = self.get_closed_pnl(client, symbol, limit=10)
-            for pnl_record in closed_pnl_data:
-                if pnl_record['side'] == position_data.get('side', '') and float(pnl_record['size']) > 0:
-                    # Position was closed by TP/SL
-                    closure_reason = "tp" if float(pnl_record.get('closedPnl', 0)) > 0 else "sl"
-                    exit_price = float(pnl_record.get('execPrice', 0))
-                    logger.info(f"TP/SL hit detected for {symbol}: {closure_reason}")
-                    break
-            
-            # If not TP/SL, check for direction change
-            if not closure_reason:
-                if (new_signal == 1 and last_signal == -1) or (new_signal == -1 and last_signal == 1):
-                    closure_reason = "direction_change"
-                    exit_price = self.get_current_price(client, symbol) or entry_price
-                    logger.info(f"Direction change detected for {symbol}")
-                else:
-                    # Must be manual closure
-                    closure_reason = "manually_closed"
-                    exit_price = self.get_current_price(client, symbol) or entry_price
-                    logger.info(f"Manual closure detected for {symbol}")
-            
-            # Calculate PnL
-            if position_data.get('side') == "Buy":  # Long position
-                pnl_percent = ((exit_price - entry_price) / entry_price) * 100
-            else:  # Short position
-                pnl_percent = ((entry_price - exit_price) / entry_price) * 100
-            
-            # Get real balance after closure
-            new_balance = self.get_account_balance(client)
-            
-            # Calculate cumulative PnL
-            ledger_key = f"{user_id}_{strategy_config['name']}"
-            if ledger_key not in self.ledger_data:
-                self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
-            
-            # Update pnl_sum with actual PnL (including the -0.05% fee)
-            self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
-            
-            # Update ledger with closure
-            self.update_ledger(
-                user_id, strategy_config, closure_reason,
-                new_signal, entry_price, exit_price,
-                self.get_account_balance(client), pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
-                trade_amount, order_id
-            )
-            
-            # Remove from active positions
-            del self.active_positions[position_key]
-            
-            logger.info(f"Position closure handled for {symbol}: {closure_reason}, PnL {pnl_percent:.2f}%")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error handling position closure: {e}")
-            return False
-
-    def check_old_trades_from_ledger(self, client: HTTP, user_id: int, strategy_config: Dict[str, Any]) -> bool:
-        """Check old trades from ledger using order_id and update their status"""
-        try:
-            # Get the ledger table name
-            table_name = self.get_ledger_table_name(user_id, strategy_config)
-            
-            # Query the ledger for the most recent 'buy' action (open trade)
-            query = text(f"""
-                SELECT order_id, buy_price, trade_amount, datetime 
-                FROM execution.{table_name} 
-                WHERE action = 'buy' 
-                ORDER BY datetime DESC 
-                LIMIT 1
-            """)
-            
-            with self.engine.connect() as conn:
-                result = conn.execute(query)
-                row = result.fetchone()
-                
-                if row and row[0]:  # If we have an order_id
-                    order_id = row[0]
-                    buy_price = row[1]
-                    trade_amount = row[2]
-                    open_time = row[3]
-                    
-                    logger.info(f"Found old trade in ledger: order_id={order_id}, buy_price={buy_price}")
-                    
-                    # Check if this order was executed and closed
-                    symbol = f"{strategy_config['symbol'].upper()}USDT"
-                    
-                    # Check for TP/SL hits first
-                    closed_pnl_data = self.get_closed_pnl(client, symbol, limit=20)
-                    for pnl_record in closed_pnl_data:
-                        if pnl_record.get('orderId') == order_id:
-                            # Order was closed by TP/SL
-                            exit_price = float(pnl_record.get('execPrice', 0))
-                            closed_pnl = float(pnl_record.get('closedPnl', 0))
-                            closure_reason = "tp" if closed_pnl > 0 else "sl"
-                            
-                            # Calculate PnL
-                            pnl_percent = ((exit_price - buy_price) / buy_price) * 100
-                            
-                            # Get real balance
-                            new_balance = self.get_account_balance(client)
-                            
-                            # Update ledger data
-                            ledger_key = f"{user_id}_{strategy_config['name']}"
-                            if ledger_key not in self.ledger_data:
-                                self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
-                            
-                            self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
-                            
-                            # Update ledger with closure
-                            self.update_ledger(
-                                user_id, strategy_config, closure_reason,
-                                0, buy_price, exit_price,  # signal 0 for closure
-                                new_balance, pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
-                                trade_amount, order_id
-                            )
-                            
-                            logger.info(f"Updated ledger for old trade {order_id}: {closure_reason}, PnL {pnl_percent:.2f}%")
-                            return True
-                    
-                    # Check if order was manually closed
-                    orders = self.get_order_history(client, symbol, limit=50)
-                    for order in orders:
-                        if order['orderId'] == order_id:
-                            if order['orderStatus'] == 'Cancelled':
-                                # Order was manually cancelled
-                                current_price = self.get_current_price(client, symbol) or buy_price
-                                
-                                # Calculate PnL at current price
-                                pnl_percent = ((current_price - buy_price) / buy_price) * 100
-                                
-                                # Get real balance
-                                new_balance = self.get_account_balance(client)
-                                
-                                # Update ledger data
-                                ledger_key = f"{user_id}_{strategy_config['name']}"
-                                if ledger_key not in self.ledger_data:
-                                    self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
-                                
-                                self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
-                                
-                                # Update ledger with manual closure
-                                self.update_ledger(
-                                    user_id, strategy_config, "manually_closed",
-                                    0, buy_price, current_price,  # signal 0 for closure
-                                    new_balance, pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
-                                    trade_amount, order_id
-                                )
-                                
-                                logger.info(f"Updated ledger for manually closed trade {order_id}: PnL {pnl_percent:.2f}%")
-                                return True
-                    
-                    # Check if position still exists
-                    current_position = self.get_position(client, symbol)
-                    if current_position is None or float(current_position.get('size', 0)) == 0:
-                        # Position was closed but we couldn't determine how - assume manual closure
-                        current_price = self.get_current_price(client, symbol) or buy_price
-                        
-                        # Calculate PnL at current price
-                        pnl_percent = ((current_price - buy_price) / buy_price) * 100
-                        
-                        # Get real balance
-                        new_balance = self.get_account_balance(client)
-                        
-                        # Update ledger data
-                        ledger_key = f"{user_id}_{strategy_config['name']}"
-                        if ledger_key not in self.ledger_data:
-                            self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
-                        
-                        self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
-                        
-                        # Update ledger with manual closure
-                        self.update_ledger(
-                            user_id, strategy_config, "manually_closed",
-                            0, buy_price, current_price,  # signal 0 for closure
-                            new_balance, pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
-                            trade_amount, order_id
-                        )
-                        
-                        logger.info(f"Updated ledger for closed trade {order_id} (unknown reason): PnL {pnl_percent:.2f}%")
-                        return True
-            
-            return False
-            
-        except Exception as e:
-            logger.error(f"Error checking old trades from ledger: {e}")
-            return False
 
 def main():
     """Main function"""
