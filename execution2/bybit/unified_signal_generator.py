@@ -1944,6 +1944,12 @@ class UnifiedSignalGenerator:
                 # Generate signals using existing generators
                 strategy_signal = self.generate_strategy_signal(strategy_config)
                 
+                # HARD CODE LONG SIGNAL FOR BTC TESTING
+                if strategy_config['symbol'].upper() == 'BTC':
+                    logger.info("🔧 HARD CODING LONG SIGNAL FOR BTC TESTING")
+                    strategy_signal = 1  # Force long signal
+                    logger.info(f"Hard-coded BTC signal: {strategy_signal}")
+                
                 if user_config['use_ml']:
                     ml_signal = self.generate_ml_signal(strategy_config)
                     combined_signal = self.combine_signals(strategy_signal, ml_signal)
@@ -2001,6 +2007,9 @@ class UnifiedSignalGenerator:
                         if (combined_signal == 1 and position_side == "Sell") or (combined_signal == -1 and position_side == "Buy"):
                             should_close = True
                             close_reason = "direction_change"
+                            logger.info(f"🎯 DIRECTION CHANGE DETECTED: {position_side} -> {combined_signal}")
+                            logger.info(f"Current position: {position_side}, New signal: {combined_signal}")
+                            logger.info(f"This will close {position_side} position and open new position in direction {combined_signal}")
                     
                     if should_close:
                         # Close position
@@ -2074,7 +2083,9 @@ class UnifiedSignalGenerator:
                             
                             # If this was a direction change, immediately open a new position in the new direction
                             if close_reason == "direction_change":
-                                logger.info(f"Direction change detected for {symbol}, opening new position in direction: {combined_signal}")
+                                logger.info(f"🔄 EXECUTING DIRECTION CHANGE for {symbol}")
+                                logger.info(f"Closing {position_side} position and opening new position in direction: {combined_signal}")
+                                logger.info(f"Direction change sequence: {position_side} -> {combined_signal}")
                                 
                                 # Get real current balance for position sizing
                                 real_balance = self.get_account_balance(client)
@@ -2160,7 +2171,11 @@ class UnifiedSignalGenerator:
                                         actual_position_size, order_id
                                     )
                                     
-                                    logger.info(f"New position opened after direction change for {symbol}: {side} {qty} @ {current_price}, Fee: {open_fee:.4f} USDT")
+                                    logger.info(f"✅ NEW POSITION OPENED AFTER DIRECTION CHANGE")
+                                    logger.info(f"Symbol: {symbol}, Side: {side}, Quantity: {qty}, Price: {current_price}")
+                                    logger.info(f"Fee: {open_fee:.4f} USDT")
+                                    logger.info(f"Direction change completed: {position_side} -> {side}")
+                                    logger.info(f"Ledger should show: 1) Original position, 2) Direction change closure, 3) New position")
                                 else:
                                     logger.error(f"Failed to place order for {symbol} after direction change")
                                 
@@ -2294,6 +2309,54 @@ class UnifiedSignalGenerator:
             
         except Exception as e:
             logger.error(f"Error executing trading logic for user {user_config['name']}: {e}")
+    
+    def check_recent_ledger_entries(self, user_id: int, strategy_name: str, limit: int = 10):
+        """Check recent ledger entries for debugging"""
+        try:
+            # Get user config to find strategy
+            user_config = self.get_user_config(user_id)
+            if user_config is None:
+                logger.error(f"Could not get user config for {user_id}")
+                return
+            
+            # Find the strategy config
+            strategy_config = None
+            for strategy in self.get_strategy_configs(user_config['strategies']):
+                if strategy['name'] == strategy_name:
+                    strategy_config = strategy
+                    break
+            
+            if strategy_config is None:
+                logger.error(f"Strategy {strategy_name} not found")
+                return
+            
+            # Get ledger table name
+            table_name = self.get_ledger_table_name(user_id, strategy_config)
+            
+            # Query recent entries
+            query = text(f"""
+                SELECT datetime, predicted_direction, action, buy_price, sell_price, 
+                       pnl_percent, pnl_sum, balance, trade_amount, order_id
+                FROM execution.{table_name} 
+                ORDER BY datetime DESC 
+                LIMIT {limit}
+            """)
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(query)
+                rows = result.fetchall()
+                
+                if rows:
+                    logger.info(f"📊 RECENT LEDGER ENTRIES FOR {strategy_name} (last {len(rows)} entries):")
+                    logger.info("=" * 80)
+                    for i, row in enumerate(rows, 1):
+                        logger.info(f"{i}. {row[0]} | {row[1]} | {row[2]} | Buy: {row[3]} | Sell: {row[4]} | PnL: {row[5]}% | Sum: {row[6]}% | Balance: {row[7]} | Amount: {row[8]} | Order: {row[9]}")
+                    logger.info("=" * 80)
+                else:
+                    logger.info(f"No ledger entries found for {strategy_name}")
+                    
+        except Exception as e:
+            logger.error(f"Error checking ledger entries: {e}")
     
     def run_continuous_trading(self, user_id: int):
         """Run continuous trading for a user with background TP/SL monitoring"""
