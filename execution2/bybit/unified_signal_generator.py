@@ -907,8 +907,8 @@ class UnifiedSignalGenerator:
                 else:
                     return value
             
-            native_entry_price = round(convert_to_native(entry_price), 2)
-            native_exit_price = round(convert_to_native(exit_price), 2)
+            native_entry_price = convert_to_native(entry_price)
+            native_exit_price = convert_to_native(exit_price)
             native_balance = round(convert_to_native(balance), 2)
             native_pnl = round(convert_to_native(pnl), 2)
             native_pnl_sum = round(convert_to_native(pnl_sum), 2)
@@ -919,20 +919,30 @@ class UnifiedSignalGenerator:
                 # For opening trades, just apply the fee
                 if action == 'open':
                     native_pnl = -0.05
+                    native_pnl = round(native_pnl, 2)  # Ensure PnL is rounded to 2 decimal places
                     # Deduct the fee from trade amount
                     fee_amount = (native_trade_amount * 0.0005)  # 0.05% of trade amount
                     native_trade_amount -= fee_amount
                     native_trade_amount = round(native_trade_amount, 2)
                     logger.info(f"Applied -0.05% PnL for {action} action, fee: {fee_amount:.2f}, new trade amount: {native_trade_amount}")
                 else:
-                    # For closing trades, use the PnL that was already calculated and passed in
-                    # The PnL calculation is done in the calling method, so we use the passed value
-                    logger.info(f"Using pre-calculated PnL for {action}: {native_pnl:.4f}%")
+                    # For closing trades, first apply the actual PnL to trade amount
+                    if native_pnl != 0:
+                        pnl_amount = (native_trade_amount * native_pnl / 100)  # Convert percentage to amount
+                        native_trade_amount += pnl_amount
+                        native_trade_amount = round(native_trade_amount, 2)
+                        logger.info(f"Applied {native_pnl}% PnL to trade amount, change: {pnl_amount:.2f}, new trade amount: {native_trade_amount}")
+                    
+                    # Then add the -0.05% fee to the PnL
+                    native_pnl -= 0.05
+                    native_pnl = round(native_pnl, 2)  # Ensure PnL is rounded to 2 decimal places
+                    logger.info(f"Added -0.05% fee to PnL for {action}: {native_pnl:.2f}%")
                     
                     # Apply fee to trade amount
                     fee_amount = (native_trade_amount * 0.0005)  # 0.05% of trade amount
                     native_trade_amount -= fee_amount
                     native_trade_amount = round(native_trade_amount, 2)
+                    logger.info(f"Applied -0.05% fee to trade amount, fee: {fee_amount:.2f}, final trade amount: {native_trade_amount}")
             else:
                 # For other actions, apply the actual PnL to trade amount
                 if native_pnl != 0:
@@ -1323,12 +1333,29 @@ class UnifiedSignalGenerator:
             # Get real balance after manual closure
             new_balance = self.get_account_balance(client)
             
-            # Calculate cumulative PnL
+            # Calculate cumulative PnL (fee will be added in update_ledger)
             ledger_key = f"{user_id}_{strategy_config['name']}"
             if ledger_key not in self.ledger_data:
                 self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
             
-            self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
+            # Get the last pnl_sum from ledger to ensure we're adding to the correct value
+            table_name = self.get_ledger_table_name(user_id, strategy_config)
+            last_pnl_query = text(f"""
+                SELECT pnl_sum FROM execution.{table_name} 
+                ORDER BY datetime DESC LIMIT 1
+            """)
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(last_pnl_query)
+                row = result.fetchone()
+                if row:
+                    last_pnl_sum = float(row[0])
+                else:
+                    last_pnl_sum = 0.0
+            
+            # Update pnl_sum by adding to the last value (fee will be added in update_ledger)
+            new_pnl_sum = last_pnl_sum + pnl_percent
+            self.ledger_data[ledger_key]['pnl_sum'] = new_pnl_sum
             
             # Get trade amount
             trade_amount = position_data.get('trade_amount', 0)
@@ -1337,7 +1364,7 @@ class UnifiedSignalGenerator:
             self.update_ledger(
                 user_id, strategy_config, "manually_closed",
                 0, entry_price, current_price,  # signal 0 for manual closure
-                new_balance, pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
+                new_balance, pnl_percent, new_pnl_sum,
                 trade_amount, order_id
             )
             
@@ -1434,6 +1461,10 @@ class UnifiedSignalGenerator:
                     closure_reason = "direction_change"
                     exit_price = self.get_current_price(client, symbol) or entry_price
                     logger.info(f"Direction change detected for {symbol}")
+                    # For direction changes, let the main execute_trading_logic handle it
+                    # This method should only handle external closures (TP/SL, manual)
+                    logger.info(f"Skipping direction change handling in handle_position_closure - will be handled by main logic")
+                    return False
                 else:
                     # Must be manual closure
                     closure_reason = "manually_closed"
@@ -1448,9 +1479,8 @@ class UnifiedSignalGenerator:
             
             logger.info(f"Raw PnL calculation: entry_price={entry_price}, exit_price={exit_price}, side={position_data.get('side')}, raw_pnl={pnl_percent:.4f}%")
             
-            # Add -0.05% fee for closing trades (TP/SL, direction change, manual close)
-            pnl_percent -= 0.05
-            logger.info(f"Final PnL after fee: {pnl_percent:.4f}%")
+            # Note: -0.05% fee will be added in update_ledger method
+            logger.info(f"Raw PnL before fee: {pnl_percent:.4f}%")
             
             # Get real balance after closure
             new_balance = self.get_account_balance(client)
@@ -1662,8 +1692,7 @@ class UnifiedSignalGenerator:
                             else:  # Short position
                                 pnl_percent = ((buy_price - exit_price) / buy_price) * 100
                             
-                            # Add -0.05% fee for closing trades
-                            pnl_percent -= 0.05
+                            # Note: -0.05% fee will be added in update_ledger method
                             
                             # Get real balance
                             new_balance = self.get_account_balance(client)
@@ -1743,8 +1772,7 @@ class UnifiedSignalGenerator:
                                 # Calculate PnL at current price
                                 pnl_percent = self.calculate_actual_pnl(buy_price, current_price, direction)
                                 
-                                # Add -0.05% fee for closing trades
-                                pnl_percent -= 0.05
+                                # Note: -0.05% fee will be added in update_ledger method
                                 
                                 # Get real balance
                                 new_balance = self.get_account_balance(client)
@@ -1824,18 +1852,35 @@ class UnifiedSignalGenerator:
                         # Get real balance
                         new_balance = self.get_account_balance(client)
                         
+                        # Get the last pnl_sum from ledger to ensure we're adding to the correct value
+                        last_pnl_query = text(f"""
+                            SELECT pnl_sum FROM execution.{table_name} 
+                            ORDER BY datetime DESC LIMIT 1
+                        """)
+                        
+                        with self.engine.connect() as conn:
+                            result = conn.execute(last_pnl_query)
+                            row = result.fetchone()
+                            if row:
+                                last_pnl_sum = float(row[0])
+                            else:
+                                last_pnl_sum = 0.0
+                        
+                        # Update pnl_sum by adding to the last value (fee will be added in update_ledger)
+                        new_pnl_sum = last_pnl_sum + pnl_percent
+                        
                         # Update ledger data
                         ledger_key = f"{user_id}_{strategy_config['name']}"
                         if ledger_key not in self.ledger_data:
                             self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
                         
-                        self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
+                        self.ledger_data[ledger_key]['pnl_sum'] = new_pnl_sum
                         
                         # Update ledger with manual closure
                         self.update_ledger(
                             user_id, strategy_config, "manually_closed",
                             0, buy_price, current_price,  # signal 0 for closure
-                            new_balance, pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
+                            new_balance, pnl_percent, new_pnl_sum,
                             trade_amount, order_id
                         )
                         
@@ -1988,9 +2033,24 @@ class UnifiedSignalGenerator:
                             if ledger_key not in self.ledger_data:
                                 self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
                             
-                            # Update pnl_sum with the actual PnL (including the -0.05% fee)
-                            # pnl_percent already includes the fee deduction, so add it directly to pnl_sum
-                            self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
+                            # Get the last pnl_sum from ledger to ensure we're adding to the correct value
+                            table_name = self.get_ledger_table_name(user_id, strategy_config)
+                            last_pnl_query = text(f"""
+                                SELECT pnl_sum FROM execution.{table_name} 
+                                ORDER BY datetime DESC LIMIT 1
+                            """)
+                            
+                            with self.engine.connect() as conn:
+                                result = conn.execute(last_pnl_query)
+                                row = result.fetchone()
+                                if row:
+                                    last_pnl_sum = float(row[0])
+                                else:
+                                    last_pnl_sum = 0.0
+                            
+                            # Update pnl_sum by adding to the last value (fee will be added in update_ledger)
+                            new_pnl_sum = last_pnl_sum + pnl_percent
+                            self.ledger_data[ledger_key]['pnl_sum'] = new_pnl_sum
                             
                             # Get order ID for ledger
                             order_id = self.active_positions.get(position_key, {}).get('order_id', "")
@@ -2002,7 +2062,7 @@ class UnifiedSignalGenerator:
                             self.update_ledger(
                                 user_id, strategy_config, close_reason,
                                 combined_signal, entry_price, exit_price,
-                                self.get_account_balance(client), pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
+                                self.get_account_balance(client), pnl_percent, new_pnl_sum,
                                 trade_amount, order_id
                             )
                             
@@ -2011,6 +2071,101 @@ class UnifiedSignalGenerator:
                                 del self.active_positions[position_key]
                             
                             logger.info(f"Position closed for {symbol}: {close_reason}, PnL {pnl_percent:.2f}%, Fee: {close_fee:.4f} USDT")
+                            
+                            # If this was a direction change, immediately open a new position in the new direction
+                            if close_reason == "direction_change":
+                                logger.info(f"Direction change detected for {symbol}, opening new position in direction: {combined_signal}")
+                                
+                                # Get real current balance for position sizing
+                                real_balance = self.get_account_balance(client)
+                                
+                                # Calculate position size based on real balance
+                                position_size = self.calculate_position_size(real_balance, strategy_config, user_id)
+                                current_price = self.get_current_price(client, symbol)
+                                
+                                if current_price is None:
+                                    logger.error(f"Could not get current price for {symbol}")
+                                    continue
+                                
+                                # Calculate quantity
+                                qty = position_size / current_price
+                                
+                                # Format quantity according to symbol requirements
+                                qty = self.format_quantity(qty, symbol)
+                                
+                                # For XRP, ensure whole number quantity
+                                if 'XRP' in symbol:
+                                    qty = int(qty)
+                                    if qty < 1:
+                                        qty = 1
+                                    logger.info(f"XRP quantity adjusted to whole number: {qty}")
+                                
+                                # Recalculate position size based on formatted quantity
+                                actual_position_size = qty * current_price
+                                logger.info(f"Actual position size: {actual_position_size:.2f} USDT for {qty} {symbol}")
+                                
+                                # Calculate TP/SL prices
+                                tp_percent = strategy_config.get('take_profit', 0.05)
+                                sl_percent = strategy_config.get('stop_loss', 0.03)
+                                
+                                if combined_signal == 1:  # Long
+                                    side = "Buy"
+                                    tp_price = current_price * (1 + tp_percent)
+                                    sl_price = current_price * (1 - sl_percent)
+                                elif combined_signal == -1:  # Short
+                                    side = "Sell"
+                                    tp_price = current_price * (1 - tp_percent)
+                                    sl_price = current_price * (1 + sl_percent)
+                                else:
+                                    continue  # Neutral signal
+                                
+                                # Check margin availability
+                                if not self.check_margin_availability(client, symbol, qty, side):
+                                    logger.warning(f"Insufficient margin for {symbol} {side} {qty}. Skipping order.")
+                                    continue
+
+                                # Place order
+                                order_id = self.place_order(client, symbol, side, qty, tp_price, sl_price)
+                                
+                                if order_id:
+                                    # Get opening fee
+                                    open_fee = self.get_trading_fee(client, symbol, order_id)
+                                    
+                                    # Get balance after opening (including fee deduction)
+                                    balance_after_open = self.get_account_balance(client)
+                                    
+                                    # Update active positions
+                                    self.active_positions[position_key] = {
+                                        'last_signal': combined_signal,
+                                        'order_id': order_id,
+                                        'entry_price': current_price,
+                                        'side': side,
+                                        'qty': qty,
+                                        'trade_amount': actual_position_size,
+                                        'tp_price': tp_price,
+                                        'sl_price': sl_price
+                                    }
+                                    
+                                    # Update the last trade amount for compounding (use the adjusted amount after PnL)
+                                    self.ledger_data[ledger_key]['last_trade_amount'] = actual_position_size
+                                    
+                                    # Add -0.05% fee to pnl_sum for opening trade
+                                    self.ledger_data[ledger_key]['pnl_sum'] += (-0.05)
+                                    
+                                    # Update ledger with real balance after opening
+                                    self.update_ledger(
+                                        user_id, strategy_config, "open",
+                                        combined_signal, current_price, 0.0,
+                                        self.get_account_balance(client), -0.05, self.ledger_data[ledger_key]['pnl_sum'],
+                                        actual_position_size, order_id
+                                    )
+                                    
+                                    logger.info(f"New position opened after direction change for {symbol}: {side} {qty} @ {current_price}, Fee: {open_fee:.4f} USDT")
+                                else:
+                                    logger.error(f"Failed to place order for {symbol} after direction change")
+                                
+                                # Skip to next iteration since we've handled the direction change
+                                continue
                     else:
                         # Same direction - log "same direction" action
                         if last_signal == combined_signal and combined_signal in [1, -1]:
@@ -2300,19 +2455,35 @@ class UnifiedSignalGenerator:
             # Get real balance after TP/SL hit
             new_balance = self.get_account_balance(client)
             
-            # Calculate cumulative PnL
+            # Calculate cumulative PnL (fee will be added in update_ledger)
             ledger_key = f"{user_id}_{strategy_config['name']}"
             if ledger_key not in self.ledger_data:
                 self.ledger_data[ledger_key] = {'pnl_sum': 0.0, 'last_trade_amount': 1000.0}
             
-            # Update pnl_sum with actual PnL
-            self.ledger_data[ledger_key]['pnl_sum'] += pnl_percent
+            # Get the last pnl_sum from ledger to ensure we're adding to the correct value
+            table_name = self.get_ledger_table_name(user_id, strategy_config)
+            last_pnl_query = text(f"""
+                SELECT pnl_sum FROM execution.{table_name} 
+                ORDER BY datetime DESC LIMIT 1
+            """)
+            
+            with self.engine.connect() as conn:
+                result = conn.execute(last_pnl_query)
+                row = result.fetchone()
+                if row:
+                    last_pnl_sum = float(row[0])
+                else:
+                    last_pnl_sum = 0.0
+            
+            # Update pnl_sum by adding to the last value (fee will be added in update_ledger)
+            new_pnl_sum = last_pnl_sum + pnl_percent
+            self.ledger_data[ledger_key]['pnl_sum'] = new_pnl_sum
             
             # Update ledger with TP/SL hit
             self.update_ledger(
                 user_id, strategy_config, close_reason,
                 0, entry_price, exit_price,  # signal 0 for TP/SL hit
-                new_balance, pnl_percent, self.ledger_data[ledger_key]['pnl_sum'],
+                new_balance, pnl_percent, new_pnl_sum,
                 trade_amount, order_id
             )
             
